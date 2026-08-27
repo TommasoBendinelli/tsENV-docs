@@ -1,0 +1,326 @@
+\documentclass[11pt]{article}
+\usepackage{manual_docs_style}
+\externaldocument{build/candidate_generation}[candidate_generation.pdf]
+\externaldocument{build/dataset_manifest_schema}[dataset_manifest_schema.pdf]
+
+\begin{document}
+
+\docTitle{Web Applications}
+\phantomsection\label{docstart:web_model_explorer}
+This document describes the two web applications available in the repo.
+\section*{Model Explorer}
+
+This is a local read-only web explorer used to inspect materialized \name{} runs and generated question bundles.
+By default, the data root is the repository's \code{models/} directory, which should contain \code{simulink/<simulator_id>/}.
+For an external bundle, set:
+\begin{DocCode}
+WEB_MODEL_EXPLORER_MODEL_ARTIFACT_DIR=/absolute/path/to/simulator
+\end{DocCode}
+The value is the simulator's artifact directory itself.
+
+Start it from the repository with:
+
+\begin{DocCode}
+bash web_model_explorer/start.sh
+\end{DocCode}
+
+The launcher starts the Next.js app in \code{web_model_explorer/}.
+It uses \code{0.0.0.0:3001} by default.
+The following variables override the host, port, and simulator artifact directory, respectively:
+\begin{DocCode}
+WEB_MODEL_EXPLORER_HOST
+WEB_MODEL_EXPLORER_PORT
+WEB_MODEL_EXPLORER_MODEL_ARTIFACT_DIR
+WEB_MODEL_EXPLORER_EVALUATION_ROOT
+WEB_MODEL_EXPLORER_EVALUATION_TIME0_ROOT
+WEB_MODEL_EXPLORER_EVALUATION_ALTERNATIVE_PROBE_ROOT
+WEB_MODEL_EXPLORER_PAPER_EVALUATION_MANIFEST
+\end{DocCode}
+The artifact-directory override is a direct path to one simulator, not a root containing \code{simulink/}.
+The evaluation-root override points to the released bundle containing the
+\code{BallDrop/}, \code{BounceBall/}, and \code{MassSlide/} directories.
+The evaluation-time-zero-root override points to a separate, viewer-only
+auxiliary artifact containing regenerated clean time-zero counterparts.
+The evaluation-alternative-probe-root override points to the separate,
+viewer-only artifact containing optimized clean alternative-root-cause probes.
+The paper-evaluation-manifest override points to the authoritative
+\code{balanced_heldout_evaluation.json} artifact.
+Run-data and noise helpers use a Python interpreter.
+The current application accepts \code{WEB_MODEL_EXPLORER_PYTHON} (or \code{PYTHON_BIN}) as an explicit interpreter override before checking repository virtual-environment paths and then \code{python3}.
+It should have a structure such as:
+\begin{DocCode}
+    experiment_config.json
+    description_levels.json
+    generated/metadata.json
+    plans/<policy_id>/
+    runs/model_record.json
+    runs/<run_id>/
+\end{DocCode}
+
+
+
+
+The registry is loaded with a paged approach to handle large policies (i.e. the design principle is that we fetch only what is needed).
+The first page contains N families (by default N=250), and additional pages are fetched on demand (by clicking the next-page button).
+The \code{Eligible only} checkbox is unchecked by default.
+When selected, it reloads the first page and shows only families containing at least one intervention run whose \code{cheap_filter_pass} value is explicitly \code{true}; expanding a retained family likewise shows only its passing intervention runs.
+When the metrics file contains explicit family summaries, their \code{family_cheap_filter_pass} value determines whether a family is retained.
+For run-only metric files, the explorer derives the family result as ``at least one passing run.''
+Families whose runs all failed the cheap filter and families without a known eligibility result are excluded.
+Filtering is applied before pagination, so the displayed family count and page controls describe the complete eligible set rather than only the eligible rows from the previously visible page.
+Full family details, including intervention and probe runs, are loaded when a family is expanded (i.e. when a family is clicked).
+Deep links are supported and can open a selected run without requiring the full policy registry to be loaded up front.
+
+For large resolved plans, the first registry request after the server starts builds a bounded in-memory index from \code{model_record.json}, \code{run_nodes.jsonl}, and \code{run_edges.jsonl}.
+Subsequent page, family, and deep-link requests reuse that index instead of reading and parsing the complete files again.
+Before reuse, the server compares each source file's absolute path, size, and modification time; a changed source is reparsed automatically, while an unchanged source continues to use the cached index.
+Only the active runtime map and resolved plan are retained, so selecting another simulator or policy replaces the previous cache entry.
+The first request after a server restart or source-file change is therefore a cold load and can take longer than later requests.
+
+\section*{Paper Evaluation View}
+
+The dedicated \code{/evaluation} route is separate from the generation-pool view at \code{/}.
+It visualizes only the exact released samples used for paper evaluation and shows the ground-truth label by default.
+The web request path does not run simulations or agents.
+Navigation links in both views switch between the generation pool and paper evaluation without changing either data source.
+
+The paper-evaluation controls select:
+
+\begin{itemize}
+\item environment: \code{BallDrop}, \code{BounceBall}, or \code{MassSlide};
+\item collection: the released task-test samples or the balanced 13-per-class batch;
+\item seed 0--4 or all seeds;
+\item ground-truth class;
+\item clean, low-noise, or high-noise trajectories and a deterministic noise seed;
+\item independent clean-baseline, time-zero-baseline, and
+alternative-root-cause overlays.
+\end{itemize}
+
+The task-test view contains ten released test samples per seed and exactly 50 unique samples per environment across seeds 0--4.
+The balanced view contains 13 samples per class per seed: 65 for BallDrop, 78 for BounceBall, and 65 for MassSlide.
+The application verifies that the released 0-shot and 3-shot IDs are identical and presents them as one shared collection.
+The 1-shot \code{fern_01234} rows are never loaded into this view.
+
+Each sample row shows its ID, ground-truth class, and seed membership.
+The detail area shows the released trajectory, intervention metadata, class counts, previous/next navigation, and a shareable URL.
+When the paired baseline Parquet is present in the released bundle, the user can select \code{Overlay clean baseline}, and noise diagnostics can report global SNR.
+If that Parquet was not released, only the baseline overlay and baseline-dependent SNR are disabled; clean and noisy sample visualization remain available.
+The separate \code{Overlay time-0 baseline} checkbox plots the same selected
+intervention magnitude applied cleanly from simulation time zero.
+The two checkboxes are independent, so the selected released episode, clean
+parent baseline, and time-zero counterpart can appear together.
+The \code{Overlay alternative-root-cause probe} checkbox adds the best-fitting
+trajectory obtained by excluding the ground-truth changed parameter,
+optimizing every other exposed parameter over its configured legal interval,
+and applying the winning change at the released episode's original
+intervention time.
+The viewer displays the winning alternative parameter, value, and normalized
+optimization loss.
+No-intervention samples do not have this probe because there is no
+ground-truth changed parameter to exclude.
+All three checkboxes are independent.
+Observation noise applies only to the selected released episode; every probe
+overlay remains clean.
+
+The time-zero trajectories are auxiliary viewer artifacts, not members of the
+released evaluation set.
+They are deterministically regenerated from the validated
+\code{model_run_specs.json} mappings with MATLAB R2025a Update 1, without rerunning any
+benchmark agent.
+The materializer validates the stored parent, child, and time-zero hashes,
+checks every generated Parquet against the simulator signal schema and time
+grid, and records source hashes, recipes, MATLAB versions, file hashes, and row
+counts in \code{time0_auxiliary_manifest.json}.
+Across the exact task-test and balanced released selections, there are 89
+BallDrop, 106 BounceBall, and 95 MassSlide time-zero trajectories (290 total).
+They can be reproduced with:
+
+\begin{DocCode}
+SIMSCAPE_CUSTOM_PATH=/path/to/tsENV/simscape_custom \
+  python workflows/simulate/materialize_evaluation_time0_baselines.py \
+  --balanced-manifest /path/to/balanced_heldout_evaluation.json \
+  --output-root /path/to/evaluation_time0_aux
+\end{DocCode}
+
+The optimized alternative-root-cause trajectories use the same 290 released
+intervention episodes.
+They are stored in another isolated auxiliary artifact and do not change
+evaluation membership or agent outputs.
+The materializer uses the exact released clean episode as its target, searches
+all non-ground-truth parameters with a nine-point coarse grid followed by
+\code{fminbnd} refinement in an explicitly verified eight-worker MATLAB
+\code{Processes} pool, verifies every optimized value against its legal
+interval, and validates the resulting Parquet against the simulator's signal
+schema and time grid.
+Its manifest records every candidate report, winning parameter and value,
+loss, source hashes, recipe, MATLAB version, and Parquet checksum.
+It can be reproduced with:
+
+\begin{DocCode}
+SIMSCAPE_CUSTOM_PATH=/path/to/tsENV/simscape_custom \
+  python workflows/simulate/materialize_evaluation_alternative_probes.py \
+  --balanced-manifest /path/to/balanced_heldout_evaluation.json \
+  --time0-root /path/to/evaluation_time0_aux \
+  --matlab-workers 8 \
+  --output-root /path/to/evaluation_alternative_probe_aux
+\end{DocCode}
+
+Examples:
+
+\begin{DocCode}
+http://localhost:3001/evaluation?environment=BallDrop&collection=task_test&seed=0
+http://localhost:3001/evaluation?environment=BallDrop&collection=balanced&seed=0
+http://localhost:3001/evaluation?environment=BallDrop&collection=task_test&seed=0&sample=<RUN_ID>
+\end{DocCode}
+
+Before returning any samples, the evaluation registry verifies the source hashes recorded by the balanced manifest, the released labels and parameter hashes, per-seed sizes, 13-per-class counts, sample-to-baseline mappings, released Parquet presence, held-out membership, and 0-shot/3-shot identity.
+A mismatch produces an explicit error instead of reconstructing or guessing a selection.
+Trajectory requests from this page use \code{source=evaluation}, which prevents a same-named generation artifact from replacing a released paper input.
+Time-zero overlay requests use \code{source=evaluation_time0}; this source is
+strictly isolated from both released and generation artifacts and accepts only
+the clean noise profile.
+Alternative-root-cause requests use
+\code{source=evaluation_alternative}; this source is likewise isolated and
+clean-only.
+The Python noise loader accepts both the current \code{baseline=} interface and the legacy \code{ref=} interface.
+
+
+
+\section*{What It Shows}
+
+The sidebar lists allowed \name{} \termSimulators that exist under \code{models/simulink/}.
+\termSimulators with missing required files remain listed but show a warning badge.
+The header shows the selected \termSimulator, selected \code{policy_id}, active runs folder name, and a reload button. 
+The reload button reloads the visible page of families and any expanded rows.
+This revalidates the source-file metadata: unchanged files reuse the in-memory index, while changed files trigger a cold rebuild.
+
+The main table is organized by \code{family_id} from the resolved run graph.
+Each family can be expanded to show its baseline run, intervention runs, and matched time-zero/static-change probe runs.
+
+Table columns include:
+
+\begin{itemize}
+\item status from \code{model_record.json};
+\item cheap-filter status from \code{cheap_filter_metrics.jsonl};
+\item \code{run_id};
+\item \code{family_id};
+\item \code{source};
+\item \code{validation_profile};
+\item \code{recipe_hash};
+\item exposed parameter and initial-state values in experiment-config order;
+\item actions for plotting and expansion.
+\end{itemize}
+
+Expanded intervention rows show changed parameter, direction, new value, and intervention time from \code{run_nodes.jsonl} and \code{run_edges.jsonl}.
+For production policies with surrogate scoring, the table also shows \code{surrogate_id}, \code{noise_level}, \code{predicted_label}, \code{true_label_confidence}, \code{confidence_margin}, and \code{surrogate_filter_pass}.
+
+\section*{Plot Area}
+
+The plot area renders selected runs.
+Plot data can be shown with no noise or with a \termSimulator-provided low or high noise profile when \code{noise_adder.py} exists.
+
+Controls include:
+
+\begin{itemize}
+\item run-selection eye buttons in the table;
+\item noise profile: \code{none}, \code{low}, or \code{high};
+\item deterministic noise seed;
+\item observed signal selection.
+\end{itemize}
+
+If two runs are selected and noise is enabled, the UI may show per-signal SNR values using the \termSimulator noise-adder utilities.
+
+\section*{Deep Links}
+Deep links can preselect a \termSimulator, policy, run, and optional comparator.
+When a deep link targets a run, the explorer resolves the run and fetches only the containing family needed to display it, rather than loading the full policy registry.
+Supported query parameters include:
+
+\begin{DocCode}
+model, policy, run, run2, compare_run, compare, noise_profile, noise_seed
+\end{DocCode}
+
+The \code{compare} parameter may be \code{baseline}, \code{time0}, \code{sibling}, or \code{none}.
+A plain \code{?run=<RUN_ID>} link opens a single-run view unless an explicit comparator is provided.
+
+Shortcut:
+
+\begin{DocCode}
+http://localhost:3001/<run_id>
+\end{DocCode}
+
+opens the matching run directly if it can be located.
+
+\section*{Endpoints Used}
+
+\begin{itemize}
+\item \code{GET /api/models}: read allowed \termSimulators and validation warnings.
+\item \code{GET /api/policies?model=<simulator_id>}: list available resolved plans under \code{plans/}.
+\item \code{GET /api/registry?model=<simulator_id>&policy=<POLICY_ID>}: load the first page of family summaries for the selected policy.
+\item \code{GET /api/registry?model=<simulator_id>&policy=<POLICY_ID>&page=<N>&page_size=<N>}: load a specific page of family summaries.
+\item \code{GET /api/registry?model=<simulator_id>&policy=<POLICY_ID>&eligible_only=true}: load only families with passing cheap-filter results and, when family details are requested, include only their passing intervention runs.
+\item \code{GET /api/registry?model=<simulator_id>&policy=<POLICY_ID>&family_id=<FAMILY_ID>}: load full details for one family, including baseline, intervention, and probe runs.
+\item \code{GET /api/registry?model=<simulator_id>&policy=<POLICY_ID>&run=<RUN_ID>}: resolve a run within a policy and load the containing family for deep-link display.
+\item \code{GET /api/registry?model=<simulator_id>&policy=<POLICY_ID>&mode=full}: explicitly load the full registry for debugging or compatibility.
+\item \code{GET /api/distribution?model=<simulator_id>}: load \code{experiment_config.json} and generated metadata used for legal domains and sampling details.
+\item \code{GET /api/locate-run?run=<RUN_ID>}: resolve a deep-linked run identifier to \termSimulator and policy.
+\item \code{GET /api/data?model=<simulator_id>&run=<RUN_ID>&max_rows=<N>&noise_profile=<PROFILE>&noise_seed=<SEED>}: load a run artifact for plotting.
+\item \code{GET /api/evaluation-registry?environment=<ENVIRONMENT>&collection=<task_test|balanced>&seed=<0--4|all>}: validate and load the exact released paper-evaluation sample registry; an optional \code{class=<LABEL>} filters the returned rows.
+\item \code{GET /api/data?model=<ENVIRONMENT>&run=<RUN_ID>&source=evaluation}: load only the released paper-evaluation Parquet for plotting.
+\item \code{GET /api/data?model=<ENVIRONMENT>&run=<RUN_ID>&source=evaluation_time0}: load only a clean, regenerated time-zero auxiliary Parquet for plotting.
+\item \code{GET /api/data?model=<ENVIRONMENT>&run=<RUN_ID>&source=evaluation_alternative}: load only a clean, optimized alternative-root-cause auxiliary Parquet for plotting.
+\item \code{GET /api/simulate?model=<simulator_id>&policy=<POLICY_ID>}: read saved simulation status information when present.
+\end{itemize}
+
+\section*{Files Read}
+
+\begin{itemize}
+\item \code{models/simulink/<simulator_id>/plans/<policy_id>/run_nodes.jsonl}
+\item \code{models/simulink/<simulator_id>/plans/<policy_id>/run_edges.jsonl}
+\item \code{models/simulink/<simulator_id>/plans/<policy_id>/generation_report.json}
+\item \code{models/simulink/<simulator_id>/plans/<policy_id>/validation_report.json}
+\item \code{models/simulink/<simulator_id>/runs/model_record.json}
+\item \code{models/simulink/<simulator_id>/metrics/<policy_id>/cheap_filter_metrics.jsonl}
+\item \code{models/simulink/<simulator_id>/metrics/<policy_id>/surrogate_scores/<surrogate_id>.jsonl}
+\item \code{models/simulink/<simulator_id>/surrogates/<surrogate_id>/thresholds.json}
+\item \code{models/simulink/<simulator_id>/generated/metadata.json}
+\item \code{models/simulink/<simulator_id>/description_levels.json}
+\item \code{models/simulink/<simulator_id>/experiment_config.json}
+\item \code{models/simulink/<simulator_id>/runs/<run_id>/data.parquet}
+\item \code{TraceBench_questions/<simulator_id>/dataframes/<run_id>.parquet}, as fallback for exported bundles
+\item \code{models/simulink/<simulator_id>/noise_adder.py}
+\item \code{<evaluation_root>/<environment>/sample_manifest.json}
+\item \code{<evaluation_root>/<environment>/model_record.json}
+\item \code{<evaluation_root>/<environment>/questions.json}
+\item \code{<evaluation_root>/<environment>/noise_adder.py}
+\item \code{<evaluation_root>/<environment>/dataframes/<run_id>.parquet}
+\item the \code{balanced_heldout_evaluation.json} file named by \code{WEB_MODEL_EXPLORER_PAPER_EVALUATION_MANIFEST}
+\item \code{<evaluation_time0_root>/<environment>/time0_baselines/<time0_run_id>.parquet}
+\item \code{<evaluation_time0_root>/time0_auxiliary_manifest.json}
+\item \code{<evaluation_alternative_probe_root>/<environment>/alternative_root_cause/<probe_run_id>.parquet}
+\item \code{<evaluation_alternative_probe_root>/<environment>/optimisation_reports/<sample_run_id>.json}
+\item \code{<evaluation_alternative_probe_root>/alternative_probe_auxiliary_manifest.json}
+\item \code{models/simulink/<simulator_id>/model_run_specs.json}
+\end{itemize}
+
+
+\section*{Human Study}
+The Human Study app checks whether exported questions are feasible for humans.
+It reads from \code{TraceBench_questions/} and can be started with:
+
+\begin{DocCode}
+bash web_human_study/start.sh [--port PORT]
+\end{DocCode}
+
+The app visualizes time series with Plotly and shows the multiple-choice labels from \code{questions.json}.
+When a user selects an option, the correct label is shown, and the result is saved under \code{human_feedback/<name>.json}.
+There is also a button to mark a question as problematic.
+
+Shortcut forms include:
+
+\begin{itemize}
+\item \code{http://localhost:5173/<run_id>}: open a sample by \termRunID.
+\item \code{http://localhost:5173/<question_id>}: open a question.
+\item \code{http://localhost:5173/<question_id>-<run_id>}: open a specific run within a question.
+\end{itemize}
+
+\end{document}

@@ -1,0 +1,26 @@
+# Canonical order for standalone docs included in the combined compact manual.
+# One .tex filename per line. Do not list documentation_index.tex,
+# docs_combined_compact.tex, or appendix_*.tex; the build handles those separately.
+terminology_shared_utilities.tex
+agent_profiles.tex
+environment_profiles.tex
+simulink_generated_metadata_schema.tex
+candidate_generation.tex
+simulation_stage.tex
+cheap_filter_metrics_stage.tex
+surrogate_training_stage.tex
+surrogate_confidence_scoring_stage.tex
+oracle_solution_stage.tex
+dataset_manifest_schema.tex
+generate_question_stage.tex
+agentic_rollout.tex
+final_artifact_scoring_stage.tex
+atif_transcription.tex
+agentic_trajectory_evaluation.tex
+claude_code_context_accounting.tex
+experiment_plan.tex
+web_model_explorer.tex
+website.tex
+public_repository.tex
+documentation_appendix_extended_related_work.tex
+learned_validity_filtering_project.tex

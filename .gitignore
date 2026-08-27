@@ -42,13 +42,14 @@
 *.tmp
 
 # Generated output directories
-.render_wrappers/
+build/render_wrappers/
 build/
 pdf/
 tmp/
+/.cache/generation/
 
 # Generated paper artifacts
-NIPS_2026_tsENV/paper_artifacts/all_paper_trajectories.json
+NIPS_2026_TraceBench/paper_artifacts/all_paper_trajectories.json
 
 # OS, editor, and backup files
 .DS_Store

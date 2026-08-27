@@ -1,0 +1,15 @@
+\documentclass[11pt]{article}
+\usepackage{manual_docs_style}
+
+\begin{document}
+
+\def\tracebenchDocsCombinedAppendixMode{1}
+\input{appendix_extended_related_work}
+
+\ifdefined\tracebenchDocsCombinedManualMode
+\else
+  \bibliographystyle{plain}
+  \bibliography{overleaf_paper/references}
+\fi
+
+\end{document}

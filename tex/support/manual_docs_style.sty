@@ -1,0 +1,240 @@
+\NeedsTeXFormat{LaTeX2e}
+\ProvidesPackage{manual_docs_style}[2026/07/11 TraceBench manual docs extensions]
+
+% Shared layout, title, source-header, and code-block behavior lives in manual_style.
+\def\manualDocBrand{TraceBench}
+\def\manualDocHasLocalRelatedWorkMeta{1}
+\RequirePackage{manual_style}
+\RequirePackage{xr-hyper}
+\RequirePackage{cleveref}
+
+\algnewcommand{\Assert}[1]{\State \textbf{assert} #1}
+
+\makeatletter
+\def\LT@makecaption#1#2#3{%
+  \LT@mcol\LT@cols c{\hbox to\z@{\hss\parbox[t]\LTcapwidth{%
+    \reset@font
+    #1{#2: }#3%
+    \endgraf\vskip\baselineskip}%
+  \hss}}}
+\makeatother
+
+\newcommand{\termSRD}{\code{SRD}\xspace}
+\newcommand{\termMinSRDDistance}{\code{min_srd_distance}\xspace}
+\newcommand{\termMinAbsDist}{\code{min_abs_dist}\xspace}
+\newcommand{\termDescLevel}{\code{desc_level}\xspace}
+\newcommand{\termSimulator}{\code{simulator}\xspace}
+\newcommand{\termSimulators}{\code{simulators}\xspace}
+\newcommand{\termSimulatorRecipe}{\code{simulator_recipe}\xspace}
+\newcommand{\termFamily}{\code{family}\xspace}
+\newcommand{\termRunID}{\code{run_id}\xspace}
+\newcommand{\termTaskMode}{\code{task_mode}\xspace}
+\newcommand{\termNoiseLevel}{\code{noise_level}\xspace}
+\newcommand{\termNoParameterChangeClass}{\ensuremath{\mathrm{NI} }\xspace}
+\providecommand{\name}{TraceBench\xspace}
+\newcommand{\changetick}{\ensuremath{\checkmark}}
+
+\definecolor{manualDocCodeBg}{RGB}{248,248,248}
+\definecolor{manualDocCodeBorder}{RGB}{210,210,210}
+\ifmanualDocLineNumbers
+  \RecustomVerbatimEnvironment{DocCode}{Verbatim}{
+    fontsize=\small,
+    breaklines=true,
+    breakanywhere=true,
+    breaksymbolleft={},
+    breaksymbolright={},
+    frame=single,
+    framerule=0.35pt,
+    framesep=3pt,
+    rulecolor=\color{manualDocCodeBorder},
+    fillcolor=\color{manualDocCodeBg},
+    numbers=none,
+    stepnumber=1,
+    numberblanklines=true,
+    numbersep=10pt,
+    firstnumber=last
+  }
+  \RecustomVerbatimEnvironment{LinkedDocCode}{Verbatim}{
+    fontsize=\small,
+    breaklines=false,
+    breaksymbolleft={},
+    breaksymbolright={},
+    frame=single,
+    framerule=0.35pt,
+    framesep=3pt,
+    rulecolor=\color{manualDocCodeBorder},
+    fillcolor=\color{manualDocCodeBg},
+    numbers=none,
+    stepnumber=1,
+    numberblanklines=true,
+    numbersep=10pt,
+    firstnumber=last,
+    commandchars=\\\{\}
+  }
+\else
+  \RecustomVerbatimEnvironment{DocCode}{Verbatim}{
+    fontsize=\small,
+    breaklines=true,
+    breakanywhere=true,
+    breaksymbolleft={},
+    breaksymbolright={},
+    frame=single,
+    framerule=0.35pt,
+    framesep=3pt,
+    rulecolor=\color{manualDocCodeBorder},
+    fillcolor=\color{manualDocCodeBg},
+    numbers=none
+  }
+  \RecustomVerbatimEnvironment{LinkedDocCode}{Verbatim}{
+    fontsize=\small,
+    breaklines=false,
+    breaksymbolleft={},
+    breaksymbolright={},
+    frame=single,
+    framerule=0.35pt,
+    framesep=3pt,
+    rulecolor=\color{manualDocCodeBorder},
+    fillcolor=\color{manualDocCodeBg},
+    numbers=none,
+    commandchars=\\\{\}
+  }
+\fi
+
+\newenvironment{EnvironmentConfigTable}{
+  \begingroup
+  \footnotesize
+  \renewcommand{\arraystretch}{1.12}
+  \setlength{\tabcolsep}{5pt}
+  \begin{longtable}{|P{0.28\textwidth}|P{0.08\textwidth}|P{0.22\textwidth}|P{0.24\textwidth}|}
+  \caption{Initial states and parameters.}\\
+  \hline
+  \textbf{Agent-facing parameter} & \textbf{Mod.} & \textbf{Internal naming} & \textbf{Sampling details} \\
+  \hline
+  \endfirsthead
+  \hline
+  \textbf{Agent-facing parameter} & \textbf{Mod.} & \textbf{Internal naming} & \textbf{Sampling details} \\
+  \hline
+  \endhead
+}{
+  \hline
+  \end{longtable}
+  \endgroup
+}
+
+\newenvironment{EnvironmentConfigTableNoMod}{
+  \begingroup
+  \footnotesize
+  \renewcommand{\arraystretch}{1.12}
+  \setlength{\tabcolsep}{5pt}
+  \begin{longtable}{|P{0.35\textwidth}|P{0.27\textwidth}|P{0.24\textwidth}|}
+  \caption{Initial states and parameters.}\\
+  \hline
+  \textbf{Agent-facing parameter} & \textbf{Internal naming} & \textbf{Allowed interval} \\
+  \hline
+  \endfirsthead
+  \hline
+  \textbf{Agent-facing parameter} & \textbf{Internal naming} & \textbf{Allowed interval} \\
+  \hline
+  \endhead
+}{
+  \hline
+  \end{longtable}
+  \endgroup
+}
+
+\newenvironment{MappingTable}[1]{
+  \small
+  \begin{longtable}{|P{0.42\textwidth}|P{0.46\textwidth}|}
+  \caption{#1}\\
+  \hline
+  \textbf{Agent-facing} & \textbf{Internal naming} \\
+  \hline
+  \endfirsthead
+  \hline
+  \textbf{Agent-facing} & \textbf{Internal naming} \\
+  \hline
+  \endhead
+}{
+  \hline
+  \end{longtable}
+}
+
+\newenvironment{ParameterTable}[1]{
+  \begingroup
+  \footnotesize
+  \let\ident\code
+  \begin{longtable}{|P{0.24\textwidth}|P{0.07\textwidth}|P{0.31\textwidth}|P{0.22\textwidth}|}
+  \caption{#1}\\
+  \hline
+  \textbf{Agent-facing parameter} & \textbf{Mod.} & \textbf{Internal naming} & \textbf{Sampling details} \\
+  \hline
+  \endfirsthead
+  \hline
+  \textbf{Agent-facing parameter} & \textbf{Mod.} & \textbf{Internal naming} & \textbf{Sampling details} \\
+  \hline
+  \endhead
+}{
+  \hline
+  \end{longtable}
+  \endgroup
+}
+
+\newenvironment{ParameterTableNoMod}[1]{
+  \begingroup
+  \footnotesize
+  \let\ident\code
+  \begin{longtable}{|P{0.27\textwidth}|P{0.34\textwidth}|P{0.23\textwidth}|}
+  \caption{#1}\\
+  \hline
+  \textbf{Agent-facing parameter} & \textbf{Internal naming} & \textbf{Sampling details} \\
+  \hline
+  \endfirsthead
+  \hline
+  \textbf{Agent-facing parameter} & \textbf{Internal naming} & \textbf{Sampling details} \\
+  \hline
+  \endhead
+}{
+  \hline
+  \end{longtable}
+  \endgroup
+}
+
+\newenvironment{StateTable}[1]{
+  \begingroup
+  \footnotesize
+  \let\ident\code
+  \begin{longtable}{|P{0.35\textwidth}|P{0.49\textwidth}|}
+  \caption{#1}\\
+  \hline
+  \textbf{Internal naming} & \textbf{Sampling details} \\
+  \hline
+  \endfirsthead
+  \hline
+  \textbf{Internal naming} & \textbf{Sampling details} \\
+  \hline
+  \endhead
+}{
+  \hline
+  \end{longtable}
+  \endgroup
+}
+
+\newenvironment{SimulationPropertiesTable}[1]{
+  \begingroup
+  \footnotesize
+  \let\ident\code
+  \begin{longtable}{|P{0.43\textwidth}|P{0.41\textwidth}|}
+  \caption{#1}\\
+  \hline
+  \textbf{Property} & \textbf{Example baseline value} \\
+  \hline
+  \endfirsthead
+  \hline
+  \textbf{Property} & \textbf{Example baseline value} \\
+  \hline
+  \endhead
+}{
+  \hline
+  \end{longtable}
+  \endgroup
+}

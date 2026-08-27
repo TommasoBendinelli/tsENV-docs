@@ -1,0 +1,454 @@
+\documentclass[11pt]{article}
+\usepackage{manual_docs_style}
+\usepackage{adjustbox}
+\usepackage{amsmath}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{array}
+\usepackage{geometry}
+\usepackage{graphicx}
+\usepackage{makecell}
+\usepackage{multirow}
+\usepackage{caption}
+\usepackage{placeins}
+\usepackage{tabularx}
+\externaldocument{overleaf_paper/build/main}[overleaf_paper/archive/compiled/main.pdf]
+\externaldocument{build/agentic_trajectory_evaluation}[agentic_trajectory_evaluation.pdf]
+
+\newcolumntype{Y}{>{\centering\arraybackslash}X}
+\newcolumntype{S}{>{\raggedright\arraybackslash}p{1.9cm}}
+\newcolumntype{M}{>{\raggedright\arraybackslash}p{2.8cm}}
+
+\begin{document}
+
+\providecommand{\FloatBarrier}{}
+
+\input{tex/generated/table_templates/consolidated_csv_schema}
+
+\newcommand{\calibrationHeader}{%
+\textbf{D} & \textbf{Noise} & \textbf{Train} &
+\textbf{Test} & \textbf{Row Slug} & \textbf{Mode} \\
+}
+\newcommand{\experimentHeader}{%
+\textbf{D} & \textbf{Noise} & \textbf{Train} &
+\textbf{Test} & \textbf{Row Slug} & \textbf{Mode} \\
+}
+\newcommand{\calibrationRow}[7]{%
+\code{#2} & #3 & #4 & #5 & \code{#6} & \code{#7} \\
+}
+\newcommand{\experimentRow}[7]{%
+\code{#2} & #3 & #4 & #5 & \code{#6} & \code{#7} \\
+}
+
+\docTitle{Experiment Plan}
+\phantomsection\label{docstart:experiment_plan}
+This document describes how to use the agentic rollout stages to create the artifacts shown in the paper, as well as those used for human analysis and debugging.
+The experiments conducted here are designed to fill out the paper and to test the following hypotheses:
+\begin{itemize}
+\item Increasing observation noise decreases agent accuracy.
+\item Requiring reusable code-rule predictions decreases performance relative to direct prediction.
+\item Removing textual context decreases performance more than removing labeled examples.
+\item Higher tool use or token use does not necessarily imply better evidence-grounded time-series analysis.
+\end{itemize}
+Other questions we want to ask are:
+\begin{itemize}
+  \item What are the most common types of errors made by the agents?
+  \item Do agents more frequently confuse intervention cases with non-intervention cases, or do they make other types of mistakes?
+\end{itemize}
+The tables with all the experiments conducted are  \hyperref[tab:experiment-plan-calibration]{Table~\ref*{tab:experiment-plan-calibration}}, \hyperref[tab:experiment-plan-main]{Table~\ref*{tab:experiment-plan-main}}, and \hyperref[tab:experiment-plan-ablation]{Table~\ref*{tab:experiment-plan-ablation}}.
+
+Assuming we have run all the experiments, the exact commands to obtain the results are located \hyperref[sec:experiment-plan-commands-to-run]{here}.
+
+\subsection*{Technical implementation brief}
+To ensure lineage, all experiment artifacts must follow the provenance requirements defined in \href{../../docs-template/tex/source/results_guideline.tex}{\code{docs-template/tex/source/results_guideline.tex}}.
+The workflow distinguishes upstream source data from canonical paper artifacts:
+\begin{itemize}
+  \item \code{results_large_artifacts/} is not committed to Git and contains large upstream artifacts such as agent trajectories and concatenated rendered PDFs.
+  Each \code{(\termSimulator, agent_id, PDF type)} tuple is concatenated separately.
+  The PDF types are \code{trajectory.pdf}, \code{trajectory_debug.pdf}, and \code{trajectory_stripped.pdf}.
+  All selected seeds for that agent are included in each tuple, ordered by seed, row slug, and \termRunID.
+  The \hyperref[docstart:agentic_trajectory_evaluation]{Agentic Trajectory Evaluation} manual is prepended exactly once to every resulting PDF.
+  \item \code{docs/overleaf_paper/tex/generated/data/} contains the single collected JSON inputs used by paper-artifact generators.
+  \item \code{docs/overleaf_paper/tex/generated/tables/} contains generated TeX tables and the matching \code{<table_name>_provenance.json} files.
+  \item \code{docs/overleaf_paper/assets/plots/} contains generated plot outputs. Each canonical plot must be generated from one collected JSON input and retain equivalent provenance metadata. The \code{assets/figures/} tree is reserved for other manuscript figures.
+\end{itemize}
+Only a Python script named \code{collect_<json_name>.py} may create a canonical collected JSON input.
+A collector gathers source records without computing statistics or aggregates. Every final artifact generator accepts exactly one collected JSON path as its input. The consolidation scripts described below are upstream preprocessing steps and do not replace this collector contract.
+
+\phantomsection\label{sec:experiment-plan-commands-to-run}
+\subsection*{Commands to run}
+\begin{DocCode}
+# 1. Re-export canonical ATIF data and recompute deterministic metrics
+for run_dir in terminal-bench/runs/*; do
+  [ -d "$run_dir" ] || continue
+  run_id="${run_dir##*/}"
+  python workflows/rollout/export_atif_trajectory.py "$run_id"
+  python workflows/trajectory/trajectory_evaluation_programmatic.py "$run_id" --render-pdf
+done
+# 2. Consolidate trajectories, numerical results, and rendered PDFs
+python consolidate_trajectories.py PAPER CALIBRATION
+python consolidate_results.py PAPER CALIBRATION
+python consolidate_pdf.py PAPER CALIBRATION
+# 3. Collect one canonical paper-results JSON and generate TeX tables
+cd docs/overleaf_paper
+python3 scripts/collect_paper_results.py
+python3 scripts/generate_paper_tables.py tex/generated/data/paper_results.json
+\end{DocCode}
+
+Steps 1 and 2 recreate the canonical ATIF trajectories and their PDF projections, recompute deterministic trajectory metrics, and prepare fresh upstream source data. The final two commands collect the run-level records declared by the experiment-plan tables above and regenerate the nine appendix tables from that one JSON list. The collector does not calculate statistics or aggregates; those operations occur only in the table generator. Paper plots and statistical-significance artifacts are not part of this canonical command block until they have equivalent collector/generator pairs that satisfy the same one-JSON contract.
+
+The following three scripts prepare upstream data. Their outputs are not canonical inputs to the final paper-artifact generators.
+The first script is:
+\begin{DocCode}
+python consolidate_trajectories.py [TAG ...] [--output-folder FOLDER]
+\end{DocCode}
+This script collects all the \code{atif_trajectory.json}, optionally filtered by tag, and stores them in \code{FOLDER}, by default \code{results_large_artifacts/trajectories}.
+
+\begin{DocCode}
+python consolidate_results.py [TAG ...] [--output-folder FOLDER]
+\end{DocCode}
+This script takes as input all \hyperref[sec:agentic-rollout-run-configurations]{\code{run_configurations/*.json}}, optionally filters them by tag, and generates two files in \code{FOLDER}, set by default at \code{results_large_artifacts/consolidated_numerical_results}.
+\begin{itemize}
+  \item \code{<row_slug>_summary.json}
+  \item \code{<row_slug>.json}
+\end{itemize}
+The schemas of these upstream JSON outputs are documented in \hyperref[sec:experiment-plan-consolidated-json-schema-appendix]{Appendix: Upstream consolidated JSON schemas}.
+
+The rendered trajectory PDFs are consolidated with:
+\begin{DocCode}
+python consolidate_pdf.py [TAG ...] [--output-folder FOLDER] [--preface PDF]
+\end{DocCode}
+The script uses the same tag filtering as \code{consolidate_results.py} and selects the newest completed run for each \code{(agent_id, \termSimulator, row_slug, seed)} identity.
+It fails before replacing existing outputs if a selected run is missing any PDF type or contains an unreadable PDF.
+By default, the \code{PAPER} and \code{CALIBRATION} outputs are written under:
+\begin{DocCode}
+results_large_artifacts/concatenated_trajectory_pdfs/
+\end{DocCode}
+For each \code{(\termSimulator, agent_id)} pair, the filenames are \code{<Simulator>__<agent_id>__trajectory.pdf}, \code{<Simulator>__<agent_id>__trajectory_debug.pdf}, and \code{<Simulator>__<agent_id>__trajectory_stripped.pdf}.
+Thus the number of output PDFs is the number of distinct \code{(\termSimulator, agent_id)} pairs multiplied by three; the current \code{PAPER} and \code{CALIBRATION} corpus contains three simulators and four agent identifiers and therefore produces 36 PDFs.
+The folder also contains the version-2 \code{manifest.json}, which records the \code{(simulator, agent_id, pdf_type)} grouping key, selection and ordering rules, repository state, manual-preface provenance, ordered source paths and hashes, output hashes, trajectory counts, and page counts.
+If \code{--preface} is omitted, the script uses \code{docs/build/agentic_trajectory_evaluation.pdf} when it is at least as new as the authoritative source; otherwise, it compiles \code{docs/tex/source/agentic_trajectory_evaluation.tex}.
+If \code{--preface} is supplied, that PDF is prepended and recorded in the manifest.
+
+
+\begingroup
+\renewcommand{\arraystretch}{1.0}
+\setlength{\tabcolsep}{2pt}
+\small
+
+\vspace{0.25em} 
+
+\begin{longtable}{
+  p{2.1cm}
+  p{1.2cm}
+  p{1.6cm}
+  p{0.9cm}
+  p{3.7cm}
+  p{2.23cm}
+}
+\caption{Calibration condition evaluated with \code{gpt-5.5}, \code{gemini-3.1-pro}, \code{claude-opus-4.6}, and \code{minimax-m2.7}; models with reasoning-effort settings use high reasoning.}\label{tab:experiment-plan-calibration}\\
+
+\toprule
+\calibrationHeader
+\midrule
+\endfirsthead
+
+\toprule
+\calibrationHeader
+\midrule
+\endhead
+
+\bottomrule
+\endlastfoot
+
+\calibrationRow{baseline_calibration}{high}{none}{0}{10}{frost_01234-anchor}{direct}
+
+\end{longtable}
+
+\vspace{0.8em}
+
+\begin{longtable}{
+  p{2.1cm}
+  p{1.2cm}
+  p{1.6cm}
+  p{0.9cm}
+  p{3.7cm}
+  p{2.23cm}
+}
+\caption{Main paper conditions evaluated with \code{gpt-5.5}, \code{gemini-3.1-pro}, \code{claude-opus-4.6}, and \code{minimax-m2.7}; models with reasoning-effort settings use high reasoning.}\label{tab:experiment-plan-main}\\
+
+\toprule
+\experimentHeader
+\midrule
+\endfirsthead
+
+\toprule
+\experimentHeader
+\midrule
+\endhead
+
+\bottomrule
+\endlastfoot
+
+\experimentRow{baseline}{high}{low}{3}{10}{gentle_01234-cloud}{direct}
+\experimentRow{code_baseline}{high}{low}{3}{10}{gentle_01234-flame}{code}
+\experimentRow{baseline_noise_high}{high}{high}{3}{10}{gentle_01234-pine}{direct}
+\experimentRow{code_baseline_noise_high}{high}{high}{3}{10}{gentle_01234-orbit}{code}
+
+\end{longtable}
+
+\vspace{0.8em}
+
+\begin{longtable}{
+  p{2.1cm}
+  p{1.2cm}
+  p{1.6cm}
+  p{0.9cm}
+  p{3.7cm}
+  p{2.23cm}
+}
+\caption{Ablation conditions evaluated with \code{gpt-5.5} and \code{gemini-3.1-pro}, both using high reasoning.}\label{tab:experiment-plan-ablation}\\
+
+\toprule
+\experimentHeader
+\midrule
+\endfirsthead
+
+\toprule
+\experimentHeader
+\midrule
+\endhead
+
+\bottomrule
+\endlastfoot
+
+\experimentRow{direct_context_shot_3}{high}{high}{0}{10}{frost_01234-pine}{direct}
+\experimentRow{code_context_shot_3}{high}{high}{0}{10}{frost_01234-orbit}{code}
+\experimentRow{no_context_shot}{none}{high}{3}{10}{gentle_01234-harbor}{direct}
+\experimentRow{code_no_context_shot}{none}{high}{3}{10}{gentle_01234-tide}{code}
+
+
+\end{longtable}
+\endgroup
+
+\section{Generate final artifacts}
+\subsection{Collected JSON and TeX tables}
+\agentProposedEdit{agent-remove-545f0315-679c-5bc2-a1e2-a7a0a7312be3}{canonical paper pipeline now runs from docs-TraceBench-KDD}{The canonical table pipeline is run from \code{docs/overleaf_paper}:}{}
+\begin{DocCode}
+python3 scripts/collect_paper_results.py
+python3 scripts/generate_paper_tables.py tex/generated/data/paper_results.json
+\end{DocCode}
+The collector reads the fresh \code{<row_slug>_summary.json} files for the nine rows declared by the calibration, main, and ablation plan tables. It validates every run recipe against this document, reads model and \termSimulator display names from their configuration files, and copies the unaggregated score and trajectory dictionaries into \code{paper_results.json}. Each run-level entry records its raw source paths and hashes, the source-data commit and dirty-worktree flag, the consolidation/configuration/script hashes, the authoritative plan hash, and the collector/generator paths. A value such as \code{unavailable-no-git-metadata} is not valid; collection must run from a checkout in which the source-data commit can be resolved. When the consolidated files have been transferred from another checkout, \code{--source-metadata} supplies the hash manifest captured in that checkout.
+
+The appendix generator accepts exactly that one JSON path and writes:
+\begin{itemize}
+  \item \code{tex/generated/tables/appendix/current/calibration/<row_slug>.tex};
+  \item \code{tex/generated/tables/appendix/current/calibration/<row_slug>_provenance.json}.
+\end{itemize}
+These paths are relative to \code{docs/overleaf_paper}. The provenance JSON contains one entry for every rendered result value, including dashes, with its row identifier, column identifier, LaTeX value, unique aggregate source-row identifier, contributing run identifiers, and the original source-row data needed to verify the value.
+
+The lightweight upstream CSV exports remain available under \code{results/consolidated/} for inspection. They are documented in \hyperref[sec:experiment-plan-consolidated-csv-schema-appendix]{Appendix: Upstream consolidated CSV schemas}, but they are not direct inputs to final paper-artifact generators.
+
+\FloatBarrier
+\subsection{Canonical appendix tables}
+Regenerate the canonical tables using the collector/generator pair:
+\begin{DocCode}
+cd docs/overleaf_paper
+python3 scripts/collect_paper_results.py
+python3 scripts/generate_paper_tables.py tex/generated/data/paper_results.json
+\end{DocCode}
+This generates the nine appendix tables from one collected JSON input. It does not overwrite the separate aggregate tables used in the main paper.
+Tables follow the following rules:
+\begin{itemize}
+\item Means and standard deviations follow the convention described in \Cref{sec:metrics}; generated tables use \verb|\scorepm{91.2}{0.4}|, rendered as \(91.2 \pm {\scriptstyle 0.4}\).
+\item Both the mean and the standard deviation use four displayed digits: for example, \code{0.559} and \code{123.4} are valid, whereas \code{0.5593} and \code{123.43} are not.
+\item All the tables follow the same font size and occupy the entire width.
+\item Each model name is read from \code{shared/config/agents.json::paper_facing_name} and must not wrap onto a second line.
+\item Each \termSimulator name must not wrap onto a second line and must match \code{experiment_config.json::paper_facing_name}.
+\item Model names and column names must all use \verb|\texttt{...}| and nothing else.
+\item Each word in the header should be capitalised.
+\item Group headers should be written as natural labels, e.g., \verb|\texttt{Low Noise}| and \verb|\texttt{High Noise}|.
+\item An entry is shown only if five repetition seeds are present for each \termSimulator.
+This holds also for the aggregate main paper tables.
+\end{itemize}
+All table paths are relative to \code{docs/overleaf_paper}. The generated appendix tables are saved under:
+\begin{DocCode}
+tex/generated/tables/appendix/current/calibration/
+\end{DocCode}
+Each table filename matches the name used by the importing document.
+So for example
+\begin{DocCode}
+\label{tab:app-per-simulator-gentle-01234-cloud}
+\input{tex/generated/tables/appendix/current/calibration/gentle_01234-cloud}
+\end{DocCode}
+Every generated table file ends with comments that record the exact generator command, the collector command that created the input JSON, and the matching provenance filename. These values must agree with the paths used for that generation run.
+The Appendix tables follow these additional rules:
+\begin{itemize}
+  \item There is one stacked table for each experiment-plan row, and every metric block has the same Model~\(\times\)~\termSimulator structure.
+  All four model rows are retained; unavailable cells render as \code{-}.
+
+  \item The score-metric blocks are read from \code{scores.json}:
+  \begin{itemize}
+    \item \textbf{Episode Accuracy}: top-1 accuracy on the episode test split visible to the agent;
+    \item \textbf{Held-out Accuracy}: top-1 accuracy on the additional held-out split, when that split exists.
+  \end{itemize}
+
+  \item The trajectory-metric blocks are read from \code{trajectory_evaluation.json}
+  Specifically the scalar blocks are the ones defined in the bullet point list of \hyperref[sec:trajectory-metrics]{Trajectory metrics}.
+
+  \item The human-readable \code{python_call_length} string is not aggregated separately because the table reports its numeric line and character components.
+  The list-valued \code{context_compaction_iterations} field is retained in the consolidated data and provenance but is not rendered as a scalar aggregate.
+
+  \item \textbf{Decision Taken} is categorical.
+  It is rendered as three integer count rows, using exactly the three categories defined in \hyperref[sec:trajectory-metrics]{Trajectory metrics}.
+  The three counts must sum to five for every visible cell.
+
+  \item A visible scalar cell contains exactly five successful repetition seeds and reports their mean and sample standard deviation.
+  A scalar cell renders as \code{-} if fewer than five successful runs are present or if the metric is unavailable for any contributing run.
+  The \textbf{Successful Runs} row and the three \textbf{Decision Taken} count rows contain integers and do not report standard deviations.
+
+  \item If all five eligible runs contain a required scalar metric, the generated cell must not render as \code{-}.
+\end{itemize}
+   
+
+The generated result tables are rendered in the paper and appendix, rather than duplicated here.
+If a requested result is not present, the generated table renders \code{-}.
+
+\subsubsection*{Main paper result tables}
+These results are created from the main paper conditions listed in Table~\ref{tab:experiment-plan-main}.
+\begin{itemize}
+  \item \hyperref[tab:acc_main_experiment_table]{Main experiment accuracy table}
+\end{itemize}
+
+\subsubsection*{Ablation paper result tables}
+These results are created from the ablation conditions listed in Table~\ref{tab:experiment-plan-ablation}.
+\begin{itemize}
+  \item \hyperref[tab:acc_ablation_training_examples]{Ablation experiment accuracy table}
+  \item \hyperref[tab:cum-ablation-training-examples]{Ablation experiment cumulative-token table}
+\end{itemize}
+
+\subsubsection*{Appendix summary tables}
+These generated tables summarize the main and ablation rows from Tables~\ref{tab:experiment-plan-main} and~\ref{tab:experiment-plan-ablation}.
+In the paper, these results appear in Appendix~\ref{app:per-simulator-result-tables}, where each experiment-plan row is expanded into a per-\termSimulator table with the stacked metrics described above.
+\begin{itemize}
+  \item \hyperref[tab:app-per-simulator-gentle-01234-cloud]{Main experiment direct low-noise table}
+  \item \hyperref[tab:app-per-simulator-gentle-01234-flame]{Main experiment code low-noise table}
+  \item \hyperref[tab:app-per-simulator-gentle-01234-pine]{Main experiment direct high-noise table}
+  \item \hyperref[tab:app-per-simulator-gentle-01234-orbit]{Main experiment code high-noise table}
+  \item \hyperref[tab:app-per-simulator-frost-01234-pine]{Ablation zero-example direct table}
+  \item \hyperref[tab:app-per-simulator-frost-01234-orbit]{Ablation zero-example code table}
+  \item \hyperref[tab:app-per-simulator-gentle-01234-harbor]{Ablation no-textual-context direct table}
+  \item \hyperref[tab:app-per-simulator-gentle-01234-tide]{Ablation no-textual-context code table}
+\end{itemize}
+
+\subsubsection*{Appendix no-noise summary tables}
+These generated tables summarize the no-noise results from Table~\ref{tab:experiment-plan-calibration}.
+In the paper, these results appear in Appendix~\ref{app:calibration-results}.
+\begin{itemize}
+  \item \hyperref[tab:app-calibration-frost-01234-anchor]{No-noise direct results table}
+\end{itemize}
+
+
+\subsection{Plots}
+The paper-visible four-panel resource figure is stored at:
+\begin{DocCode}
+tex/generated/figures/results/accuracy_vs_tokens_cost_time_tool_calls.pdf
+\end{DocCode}
+It contains Accuracy vs (i) Cumulative Tokens, (ii) Cost, (iii) Total Time, and (iv) Tool Calls.
+Each point pools the 60 main-experiment episodes for one model.
+Regenerate the PDF and PNG from the canonical collected JSON with:
+\begin{DocCode}
+python3 scripts/plot_accuracy_vs_resources.py \
+  --input tex/generated/data/paper_results.json
+\end{DocCode}
+
+
+
+\FloatBarrier
+\appendix
+\section{Canonical collected paper-results JSON}
+\phantomsection\label{sec:experiment-plan-canonical-paper-results-json}
+
+\agentProposedEdit{agent-remove-cd4bcf3d-7d8f-59cb-b94e-e508ef35e780}{canonical paper-results path moved to docs-TraceBench-KDD}{The canonical input \code{docs/overleaf_paper/tex/generated/data/paper_results.json} is a JSON list with one entry per successful run.}{}
+Each entry contains:
+\begin{itemize}
+  \item \code{source_row_id}, uniquely identifying the row slug, model, \termSimulator, and seed;
+  \item \code{experiment_plan}, containing the authoritative plan row, expected seeds and models, display-name mappings, and plan hash;
+  \item \code{identity}, containing the run identity, recipe, configuration, tag, and seed;
+  \item \code{scores} and \code{trajectory_evaluation}, containing unaggregated per-run source values;
+  \item \code{source}, containing the resolved source-data commit, dirty-worktree flag, source paths, and source/configuration/consolidation hashes;
+  \item \code{pipeline}, containing the collection script, generation script, input JSON path, appendix scope, and output table path.
+\end{itemize}
+Each sibling table-provenance entry contains:
+\begin{itemize}
+  \item \code{row_identifier};
+  \item \code{column_identifier};
+  \item \code{latex_value};
+  \item \code{source_row_id};
+  \item \code{source_row_ids};
+  \item \code{source_row_data};
+  \item \code{generation}, containing generator, input-JSON, and layout-template hashes.
+\end{itemize}
+This is the only JSON passed to \code{scripts/generate_paper_tables.py}.
+
+\section{Upstream consolidated JSON schemas}
+\phantomsection\label{sec:experiment-plan-consolidated-json-schema-appendix}
+
+The \code{consolidate_results.py} script writes row-level JSON artifacts under \code{results_large_artifacts/consolidated_numerical_results}.
+These files are upstream preprocessing artifacts. Because they are split across multiple files and are not produced by the canonical \code{collect_<json_name>.py} interface, they must not be passed directly to final paper-artifact generators.
+Every entry in \code{<row_slug>_summary.json} and \code{<row_slug>.json} contains an \code{identity_entries} object with the following fields.
+
+\begingroup
+\small
+\setlength{\tabcolsep}{4pt}
+\renewcommand{\arraystretch}{1.08}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{0.30\textwidth}>{\raggedright\arraybackslash}p{0.62\textwidth}@{}}
+\toprule
+\textbf{Field} & \textbf{Description} \\
+\midrule
+\code{timestamp} & \code{configuration_name.json::timestamp} \\
+\code{configuration_name} & Name of the configuration file used \\
+\code{paths} & Path to the scores \\
+\termSimulator & \termSimulator name \\
+\code{agent_id} & Agent profile identifier from \code{run_configurations/*.json::runs[]::agent_id} \\
+\code{question_slug} & Question slug \\
+\code{recipe} & Question recipe metadata copied from \code{question.recipe_info.*} field \\
+\code{seed_numbers} & Number of repetition seeds planned for this experiment family. \\
+\bottomrule
+\end{tabular}
+\endgroup
+
+\paragraph{\texorpdfstring{\titlecode{<row\_slug>\_summary.json}}{<row\_slug>\_summary.json}.}
+The summary artifact additionally contains:
+\begin{itemize}
+  \item \code{score_batch}: a list of per-repetition metric dictionaries from \code{scores.json::final_metric_test}.
+  Each dictionary contains \code{average_top1_accuracy}, \code{average_shortlist_score}, and \code{average_num_answers}.
+  \item \code{score_other_batch}: a list of per-repetition metric dictionaries from \code{scores.json::final_metric_other} (optional, only for code runs).
+  Each dictionary contains \code{average_top1_accuracy}, \code{average_shortlist_score}, and \code{average_num_answers}.
+  \item \code{trajectory_evaluation}: a list containing one consolidated dictionary per run.
+  Each dictionary is derived from \code{trajectory_evaluation.json} without changing the authoritative metric meanings and contains:
+  \begin{itemize}
+    \item \code{atif_trajectory_path} and \code{atif_pdf_trajectory_path};
+    \item \code{cost_usd};
+    \item \code{total_time_seconds}, containing active agent-system runtime; \code{elapsed_time_seconds}, containing the uninterrupted first-user-to-final-agent interval; \code{session_limit_wait_seconds}, containing their difference; and \code{total_time_method}, recording whether continuous elapsed time or summed invocation durations were used;
+    \item \code{tokens}, including total and per-agent-iteration prompt and completion token values;
+    \item \code{total_steps}, copied from \code{number_of_interactions.agent.steps};
+    \item \code{number_of_tool_calls}, copied from \code{number_of_interactions.agent.tool_call_steps};
+    \item \code{plots_generated} and \code{plots_inspected}, copied from \code{artifact_analysis.plots};
+    \item \code{metrics}, an unchanged copy of \code{trajectory_evaluation.json::metrics};
+    \item flattened copies of every field in \code{metrics}, retained for upstream CSV export and later collection without changing their meanings.
+  \end{itemize}
+\end{itemize}
+
+\paragraph{\texorpdfstring{\titlecode{<row\_slug>.json}}{<row\_slug>.json}.}
+The detailed artifact additionally contains:
+\begin{itemize}
+  \item \code{wrong_uuids}: a list of two-item lists, where each element contains \code{question_uuid} and \termRunID for entries that the model answers incorrectly.
+  \item \code{sample_results}: a list of per-run dictionaries copied from \code{scores.json::sample_results}.
+\end{itemize}
+
+If multiple entries share the same \code{(agent_id, model, question_slug)} combination across different \code{run_configurations/*.json} files, where \code{model} is the \termSimulator identifier, the newest entry is returned based on the \code{configuration_name} value.
+
+
+
+\end{document}

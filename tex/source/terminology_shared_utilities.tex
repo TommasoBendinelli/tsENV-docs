@@ -1,0 +1,197 @@
+\documentclass[11pt]{article}
+\usepackage{manual_docs_style}
+
+% Source-review destinations used by the docs comment synchronizer.
+\DeclareRobustCommand{\ReviewAnchor}[2]{%
+  \ifcsname hypertarget\endcsname
+    \hypertarget{review-anchor:\detokenize{#1}}{}%
+  \else
+    \pdfdest name {review-anchor:#1} xyz%
+  \fi
+}
+% Keep review anchors out of PDF bookmark strings.
+\ifcsname pdfstringdefDisableCommands\endcsname
+  \pdfstringdefDisableCommands{%
+    \def\ReviewAnchor#1#2{}%
+  }
+\fi
+\begin{document}
+
+\docTitle{Terminology and Common Utilities}
+\phantomsection\label{docstart:terminology_common_utilities}
+
+\agentProposedEdit
+  {agent-add-b52bdc65-df6d-57e9-b82f-0e13e43012d4}
+  {Add this agent-authored block for review.}
+  {}
+  {\textbf{Paper-aligned terminology.}}
+\begin{itemize}
+\item A \name{} task is a batched closed-set root-cause attribution problem in which the agent assigns one class to every test sample.
+\item A time-series sample is one multivariate observation with \(T\) time steps and \(C\) observed channels.
+\item The test batch is the unlabeled set of samples for which the agent must return predictions.
+\item The optional labeled support batch contains samples from the same simulator as the test batch together with their ground-truth labels.
+\item An evaluation episode is one complete agent interaction with an instantiated task, beginning when the agent receives the task and ending when the agent returns control.
+\item A physical simulator generates a noise-free trajectory from a parameter vector and an initial state.
+\item An intervention sample contains one instantaneous step change in one candidate simulator parameter at an intervention time.
+\item A no-intervention sample keeps every simulator parameter fixed throughout the simulation and has class label \(\mathrm{NI}\).
+\item The observation model \(p_{\kappa}\) generates a noisy time-series observation from a noise-free trajectory, with the scalar \(\kappa\) controlling the intensity of measurement corruption.
+\end{itemize}
+
+\agentProposedEdit
+  {agent-add-233fa2d6-8adb-5264-9381-e8f21aca7f23}
+  {Add this agent-authored block for review.}
+  {}
+  {\textbf{Paper-to-implementation mappings.}}
+\begin{itemize}
+\item The paper's with-domain-context and without-domain-context settings map to \code{desc_level=high} and \code{desc_level=none}, respectively.
+\item The paper's \(\kappa_{\mathrm{low}}\) and \(\kappa_{\mathrm{high}}\) observation-noise regimes map to \code{noise_level=low} and \code{noise_level=high}, respectively.
+\item The internal \code{noise_level=none} setting materializes a noise-free trajectory and is not one of the paper's evaluated low-noise or high-noise regimes.
+\item The paper's labeled-examples axis maps to the internal support-sample count \code{shot} and its resolved grouping key \code{shot_slug}.
+\item The paper's direct-answer mode \(\mathcal{S}_{\mathrm{direct}}\) and programmatic-submission mode \(\mathcal{S}_{\mathrm{prog}}\) map to \code{task_mode=direct} and \code{task_mode=code}, respectively.
+\item Internal generation identifiers such as \code{simulator_recipe}, \code{run_id}, and \code{family_id} belong in the corresponding pipeline-stage documentation rather than in the paper terminology glossary.
+\end{itemize}
+
+\section*{\agentProposedEdit{agent-remove-ed0fa7b2-2aa3-515b-ace0-257adad89635}{replaced by the paper-aligned glossary and mappings above}{Documentation Terminology}{}}
+\begin{itemize}
+\item \agentProposedEdit{agent-remove-e44b6e6d-c161-50f9-b3d5-0ee4a94572d1}{minimum absolute distance is an internal configuration field and is not part of the paper terminology glossary}{(\termMinAbsDist): minimum absolute distance/change required between values.}{}
+\agentProposedEdit{agent-remove-81f066c5-6755-5d41-9e7c-5640857e99ab}{the allowed simulator registry belongs in the environment documentation}{The allowed values are defined in \code{ALLOWED_TRACEBENCH_MODELS}.}{}
+\item \agentProposedEdit{agent-remove-00a4d24f-06f2-5bd0-8dd4-1ab4197e0235}{simulator_recipe is an internal generation identifier that belongs in the pipeline-stage documentation}{(\termSimulatorRecipe): One configuration that can be given as input to the simulate stage to generate.}{}
+\item \agentProposedEdit{agent-remove-11f967a1-522b-5309-983b-deb3eef71606}{run_id is an internal generation identifier that belongs in the pipeline-stage documentation}{(\termRunID): An identifier for a single run.}{}
+\item \agentProposedEdit{agent-remove-098c62e1-6db8-5ed1-b49f-4ea3bfe012c6}{family is an internal generation concept that belongs in the pipeline-stage documentation}{(\termFamily): A \termFamily is the baseline-centered group of run nodes generated from one sampled baseline recipe.}{}
+\agentProposedEdit{agent-remove-72fb93c8-7739-5635-9022-e4213528e949}{family is an internal generation concept that belongs in the pipeline-stage documentation}{It contains the baseline run, all intervention children derived from that baseline, and the matched time-zero/static-change probe for each intervention.}{}
+\agentProposedEdit{agent-remove-bfcbf6ed-c22a-5528-a139-f16b6344cae3}{family_id is a separate baseline-recipe hash rather than the baseline run_id}{All nodes in the group share the same \code{family_id}, which is \termRunID of the baseline.}{}
+\item \agentProposedEdit{agent-remove-5225c385-9c63-58d1-bd8b-8b3a7b8f81c1}{replaced by the paper-aligned observation-noise definition and mapping above}{(\termNoiseLevel): The observation-noise profile applied when materializing a sample.}{}
+\end{itemize}
+
+
+\section*{\agentProposedEdit{agent-remove-a7391171-2fc1-550e-9d40-bca601757405}{repository layout is operational documentation rather than paper terminology}{Private repository structure}{}}
+\agentProposedEdit
+  {agent-add-db6cc8d4-9968-53e1-b90e-83421718b2fd}
+  {Add this agent-authored block for review.}
+  {}
+  {The complete private-repository listing below should be removed from this terminology page and maintained only in repository-specific operational documentation.}
+\begin{DocCode}
+pyproject.toml      # project metadata + dependencies1
+uv.lock             # exact locked dependency versions
+TraceBench/
+models/simulink/
+workflows/
+terminal-bench/
+simscape_custom/
+\end{DocCode}
+
+\section*{\agentProposedEdit{agent-remove-f4df8f6f-e678-53a3-8b3e-1afc75fbab6b}{machine ownership is operational documentation rather than paper terminology}{Computer and responsibily}{}}
+\agentProposedEdit
+  {agent-add-70b54e91-11f0-5634-8e37-ec55c9681702}
+  {Add this agent-authored block for review.}
+  {}
+  {The complete machine-responsibility section below should be removed from this terminology page and maintained only in operational documentation.}
+\begin{itemize}
+    \item \code{MacBook}: documentation and paper writing.
+    \item \code{L7161}: generate large amounts of data.
+    \item \code{tommaso-desktop}: experiment running.
+    \item \code{sip-ml}: student work.
+\end{itemize}
+
+
+
+\section*{\agentProposedEdit{agent-remove-bf6b95b8-454c-589e-90eb-a333a4cb1107}{utility implementation details belong in the relevant pipeline-stage documentation}{Common Utilities}{}}
+\agentProposedEdit
+  {agent-add-1dc6f19a-fc5a-5043-9473-94482bc05147}
+  {Add this agent-authored block for review.}
+  {}
+  {The complete utility-pseudocode section below should be removed because it documents implementation details rather than paper terminology.}
+
+\begin{algorithm}[H]
+  \caption{\code{materialize(uuid_path, noise_level="none", seed, uuid_reference_path=None) -> (df, noise_analysis)}}
+\label{def:materialize-utility}
+\textbf{Purpose.} Loads a saved run artifact, optionally applies the requested observation-noise profile, anonymizes columns to \code{col1}, \code{col2}, \ldots, \code{colN}, and returns the agent-visible dataframe.
+
+\textbf{Used by.} Cheap Filter Metrics, Agentic Rollout, and Final Artifact Scoring.
+\par\smallskip
+\begin{algorithmic}[1]
+\State \code{src} $\gets$ read parquet file at \code{uuid_path}
+\State \code{ref} $\gets$ \code{None}
+\State \code{noise_analysis} $\gets$ \code{None}
+\If{\code{uuid_reference_path} is not \code{None}}
+    \State \code{ref} $\gets$ read parquet file at \code{uuid_reference_path}
+\EndIf
+\If{\code{noise_level} $\neq$ \code{"none"}}
+    \State \code{(noisy_df, noise_analysis)} $\gets$ \code{add_noise(src, seed, noise_level, ref=ref)}
+    \State \code{df} $\gets$ \code{noisy_df}
+\Else
+    \State \code{df} $\gets$ \code{src}
+\EndIf
+\State Rename all columns of \code{df} to \code{col1}, \code{col2}, \ldots, \code{colN}
+\Assert \code{colN} is time (i.e. regularly sampled)
+\State \Return \code{(df, noise_analysis)}
+\end{algorithmic}
+\end{algorithm}
+
+Where \code{add_noise} is defined for each \termSimulator in \code{noise_adder.py}.
+
+\agentProposedEdit{agent-remove-cd5db0d6-d948-5ecb-b39c-2e48383e0f6d}{NOISE_DICT now contains separate low and high profile objects rather than low-only base magnitudes}{Each \termSimulator's \code{noise_adder.py} defines \code{NOISE_DICT}, whose values give the \termSimulator-specific base magnitudes for the low-noise regime.}{}
+\begin{algorithm}[H]
+\caption{\code{add_noise(...)}}
+\label{def:add-noise-utility}
+\textbf{Purpose.} Applies the \termSimulator-specific low or high observation-noise profile to a clean simulator trajectory and optionally to its matched reference trajectory.
+
+\textbf{Used by.} \code{materialize(...)}, Cheap Filter Metrics, Agentic Rollout, and noise-analysis reporting.
+\par\smallskip
+\begin{algorithmic}[1]
+\Assert{\code{noise_level} is in \code{"none","low","high"}}
+\State \code{current_seed} $\gets$ \code{seed}
+\State \code{scale} $\gets$ \code{NOISE_LEVEL_MULTIPLIER[noise_level]}
+\State \code{src_noisy} $\gets$ apply \termSimulator-specific noise to \code{src} using \code{current_seed}, \code{scale}, \code{NOISE_DICT}
+\If{\code{ref} is not \code{None}}
+    \State \code{ref_noisy} $\gets$ apply \termSimulator-specific noise to \code{ref} using \code{current_seed+10}, \code{scale}, \code{NOISE_DICT}
+\Else
+    \State \code{ref_noisy} $\gets$ \code{None}
+\EndIf
+\State \code{noise_analysis} $\gets$ \code{quantify_effect_snr(src, src_noisy, ref, ref_noisy)}
+\State \Return \code{(src_noisy, noise_analysis)}
+
+\end{algorithmic}
+\end{algorithm}
+
+\begin{algorithm}[H]
+\caption{\code{quantify_effect_snr(...)}}
+\label{def:quantify-noise-utility}
+\textbf{Purpose.} Computes the effect-to-noise signal-to-noise ratio between a clean trajectory, its noisy version, and optionally a matched reference trajectory.
+
+\textbf{Used by.} Noise analysis during materialization and cheap-filter metrics.
+\par\smallskip
+\begin{algorithmic}[1]
+\State \code{snr_analysis} $\gets$ \code{[]}
+\ForAll{observed non-time signals \code{signal}}
+    \If{\code{ref} is not \code{None}}
+        \State \code{clean_effect_signal} $\gets$ \code{src[signal]} $-$ \code{ref[signal]}
+        \If{\code{ref_noisy} is not \code{None}}
+            \State \code{src_noise_signal} $\gets$ \code{src_noisy[signal]} $-$ \code{src[signal]}
+            \State \code{ref_noise_signal} $\gets$ \code{ref_noisy[signal]} $-$ \code{ref[signal]}
+            \State \code{noise_signal} $\gets$ \code{src_noise_signal} $-$ \code{ref_noise_signal}
+        \Else
+            \State \code{noise_signal} $\gets$ \code{src_noisy[signal]} $-$ \code{src[signal]}
+        \EndIf
+    \Else
+        \State \code{clean_effect_signal} $\gets$ \code{src[signal]}
+        \State \code{noise_signal} $\gets$ \code{src_noisy[signal]} $-$ \code{src[signal]}
+    \EndIf
+    \State append \code{SNR_db(clean_effect_signal, noise_signal)} to \code{snr_analysis}
+\EndFor
+\State \Return \code{snr_analysis}
+\end{algorithmic}
+\end{algorithm}
+
+Where 
+\begin{DocCode}
+    SNR_db(effect_signal, noise) = 20 log10(RMS(effect_signal) / RMS(noise))
+\end{DocCode}
+\begin{itemize}
+    \item \code{effect_signal} is the intervention effect relative to the reference trajectory, not the raw signal amplitude.
+    \item Signals undergo preprocessing before the formula is applied, following \code{docs/overleaf_paper/src/appendix/appendix_environment.tex::*::Signal preprocessing}.
+    \item \code{quantify_effect_snr} also accepts \textbf{list} inputs for \code{src}, \code{src_noisy}, \code{ref=None}, and \code{ref_noisy=None}.
+    \item For list inputs, it returns the mean SNR by first averaging the linear effect-to-noise ratios over the list.
+    \item The returned SNR in dB is then computed as \code{20*log10(mean effect-to-noise ratio)}.
+    \end{itemize}
+\end{document}

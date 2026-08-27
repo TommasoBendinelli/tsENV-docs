@@ -1,0 +1,234 @@
+\documentclass[11pt]{article}
+\usepackage{manual_docs_style}
+\usepackage{booktabs}
+\usepackage{tabularx}
+
+\begin{document}
+
+\docTitle{Claude Code Trajectory Logging and Context-Token Accounting}
+\phantomsection\label{docstart:claude_code_context_accounting}
+
+This note documents a limitation of historical TraceBench runs executed through
+Claude Code: the archived Claude Code trajectory is a conversation and response
+log, not a byte-for-byte capture of every model request.  The log is sufficient
+to recover the visible dialogue, tool interactions, and provider-reported usage
+totals, but it is not sufficient to independently reconstruct the complete model
+context that produced those totals.
+
+The limitation affects the interpretation of cumulative-input diagnostics in the
+trajectory debug PDFs.  In particular, equality between an estimated count and a
+provider count at the first measured agent step can be a consequence of
+calibration rather than evidence that two independent measurements agree.
+
+
+\section*{Recorded history versus model request}
+
+The Claude Code history under
+\code{agent_logs/.claude/projects/*.jsonl} records events emitted by the client.
+Depending on the event, these records preserve the initial user prompt, subsequent
+user messages, assistant content blocks, tool calls, tool results, selected
+attachments, identifiers, timestamps, the Claude Code version, and provider usage
+fields.
+
+The model request is larger than this recorded history.  A request can also
+contain a harness-generated system prefix, policy and environment instructions,
+built-in tool definitions and their JSON schemas, dynamically injected context,
+cache-control boundaries, and provider-specific request framing.  These
+components affect the model input even when they are not emitted as ordinary
+conversation events.
+
+\begin{center}
+\small
+\begin{tabularx}{\textwidth}{@{}p{0.28\textwidth}p{0.20\textwidth}X@{}}
+\toprule
+\textbf{Component} & \textbf{Historical log} & \textbf{Consequence} \\
+\midrule
+Initial task prompt & Generally present & Its text can be retokenized. \\
+Assistant messages and tool interactions & Generally present & The retained
+conversation can be reconstructed subject to exporter normalization. \\
+Selected harness attachments & Sometimes present & Only the emitted attachment
+content is directly recoverable. \\
+Provider usage counters & Present on measured responses & The provider total is
+known, but the counters do not reveal missing text. \\
+Complete system or harness prefix & Not captured as a complete request field & Its
+historical text and ordering cannot be established from the trajectory alone. \\
+Complete tool-definition array & Not captured & Tool calls reveal which tools were
+used, but not necessarily the exact schemas supplied to the model. \\
+Exact cache-block contents and boundaries & Not captured as a request snapshot & A
+cache-read count is a size measurement, not a copy of the cached payload. \\
+Exact provider request serialization & Not captured & Wrapper and formatting
+effects cannot be replayed exactly from the trajectory alone. \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+Possessing the harness source or knowing the Claude Code version is useful but is
+not equivalent to possessing the historical request.  Some prompt components are
+generated dynamically from the working directory, configuration, available
+tools, installed skills, environment state, and client version.  Recreating a
+similar environment later does not prove that its serialized request is identical
+to the request used by the archived run.
+
+
+\section*{Claude provider usage fields}
+
+For the Claude Code logs used here, the inclusive provider input count for one
+model invocation is
+\[
+  P = T_{\mathrm{input}}
+      + T_{\mathrm{cache\_creation}}
+      + T_{\mathrm{cache\_read}}.
+\]
+The three terms correspond to the raw fields
+\code{input_tokens}, \code{cache_creation_input_tokens}, and
+\code{cache_read_input_tokens}.  They must be retained separately in source data
+and summed exactly once when a single inclusive prompt count is required.
+
+One observed first invocation reports:
+\begin{DocCode}
+input_tokens                 =     3
+cache_creation_input_tokens  =  4898
+cache_read_input_tokens      = 11113
+                                 -----
+inclusive prompt tokens      = 16014
+\end{DocCode}
+This establishes the provider-measured size of that input.  It does not supply the
+text represented by all 16,014 tokens.  In particular, the 11,113-token cache-read
+field states how many cached tokens were used, not what their content was.
+
+Claude Code may emit one streamed assistant response as several JSONL records.
+Those records can repeat the same provider message identifier and usage object.
+An exporter must group fragments belonging to the same provider message, select
+the final usage state for that message, and attach it once to the corresponding
+canonical agent invocation.  Summing usage over raw fragments would count the same
+invocation multiple times.
+
+
+\section*{Why the missing prefix cannot be derived from its count}
+
+A token count is not an invertible representation of text.  Many distinct system
+prompts, tool schemas, and request layouts have the same token count.  Consequently,
+the provider total and the reconstructed visible conversation determine only the
+size of an omitted remainder under a chosen accounting rule; they do not determine
+the remainder's text.
+
+This matters especially when two tokenizers are involved.  Let
+\(P_{\mathrm{Claude}}\) be the provider input count, and let
+\(V_{\mathrm{o200k}}\) be the count obtained by applying
+\code{o200k_base} to the visible retained content.  Defining
+\[
+  B = P_{\mathrm{Claude}} - V_{\mathrm{o200k}}
+\]
+does not reconstruct the omitted prefix under \code{o200k_base}.  The subtraction
+mixes counts produced by different tokenization and accounting systems.  The result
+\(B\) is a provider-calibrated offset, not a direct tokenization of the hidden
+prefix.
+
+If the subsequent displayed estimate is calculated as
+\[
+  \widehat{C} = B + V_{\mathrm{o200k}},
+\]
+then at the calibration step
+\[
+  \widehat{C}
+  = (P_{\mathrm{Claude}} - V_{\mathrm{o200k}})
+    + V_{\mathrm{o200k}}
+  = P_{\mathrm{Claude}}.
+\]
+Thus a display such as
+\begin{DocCode}
+Cumulative input tokens: 16014 / 16014
+\end{DocCode}
+is exactly equal by construction when the first value uses this calibration.
+It is not an independent agreement between \code{o200k_base} and Claude's token
+accounting.
+
+
+\section*{Consequences for historical TraceBench runs}
+
+For an existing run without a complete request snapshot, TraceBench can report the
+following facts honestly:
+\begin{itemize}
+  \item the provider input count for invocations whose usage was recorded;
+  \item the provider output count for those invocations;
+  \item an \code{o200k_base} count of the content that is actually present in the
+  canonical trajectory;
+  \item a provider-calibrated cumulative index, provided that it is explicitly
+  labelled as calibrated and is not presented as an independent full-context
+  estimate.
+\end{itemize}
+
+TraceBench cannot derive a pure \code{o200k_base} count of the complete historical
+context when the hidden request components are absent.  Nor can it infer their text
+from the provider usage counters.  Reconstructing visible messages and subtracting
+their estimated count from the provider total does not remove this limitation.
+
+The provider prompt count remains authoritative as a provider measurement.  The
+limitation concerns only an independent reconstruction of the complete input and
+the interpretation of comparisons against that provider measurement.
+
+
+\section*{Recommended debug-PDF semantics}
+
+The clearest representation for historical runs is to keep independently known
+quantities separate:
+\begin{itemize}
+  \item \textbf{Provider cumulative input tokens}: display the inclusive provider
+  count when available.
+  \item \textbf{Reconstructed visible-context tokens}: display the
+  \code{o200k_base} count of only the context components preserved in the
+  trajectory.
+  \item \textbf{Complete-context estimate}: display \,\code{-}\, unless the complete
+  request was captured or the value is explicitly named a
+  \emph{provider-calibrated estimate}.
+\end{itemize}
+
+If a two-value field is retained with the intended meaning
+``independent complete-context estimate / provider measurement'', the strict
+historical rendering is therefore:
+\begin{DocCode}
+Cumulative input tokens: - / 16014
+\end{DocCode}
+Alternatively, a calibrated value may be shown, but both the label and the manual
+must make the dependency explicit.  The first calibrated pair must not be used as
+validation evidence, because equality at the anchor is guaranteed algebraically.
+
+Provider completion tokens and reconstructed step-added tokens also require
+distinct labels.  A reconstructed step can include tool observations added by the
+harness, whereas provider completion usage counts model output.  These quantities
+need not cover the same content even before considering tokenizer differences.
+
+
+\section*{Capture requirements for future runs}
+
+An independently reproducible complete-context estimate requires a request-side
+capture made immediately before each provider call.  The capture should preserve:
+\begin{enumerate}
+  \item the ordered system and harness instruction blocks;
+  \item the complete ordered message list supplied to the model;
+  \item every tool name, description, and input schema;
+  \item attachments and dynamically injected environment context;
+  \item cache-control markers, cache-block boundaries, and hashes of the exact
+  cached content;
+  \item model, client, harness, tokenizer, and schema versions;
+  \item request options that can affect provider accounting;
+  \item the exact UTF-8 text or a canonical serialization from which it can be
+  reproduced; and
+  \item the provider's raw usage fields, stored without discarding the cached and
+  uncached split.
+\end{enumerate}
+
+The capture format should distinguish content from accounting metadata and should
+record hashes for integrity checks.  Because system prompts, environment context,
+and tool arguments can contain credentials or other sensitive data, capture and
+publication must use an explicit redaction policy.  A redacted public artifact may
+retain hashes and counts, while exact internal reproduction requires access to the
+unredacted secured snapshot.
+
+With such a snapshot, TraceBench can tokenize the same complete reconstructed
+request with \code{o200k_base} for a model-independent diagnostic and compare it
+with the provider measurement without using that measurement to manufacture the
+estimate.  Without it, the visible history and the provider total must remain two
+different kinds of evidence.
+
+\end{document}

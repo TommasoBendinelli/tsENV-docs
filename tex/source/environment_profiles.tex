@@ -1,0 +1,458 @@
+\documentclass[11pt]{article}
+\usepackage{manual_docs_style}
+\externaldocument{build/terminology_shared_utilities}[terminology_shared_utilities.pdf]
+\externaldocument{build/appendix_environment}[appendix_environment.pdf]
+
+\begin{document}
+
+\newcommand{\environmentBuildMetadataStageLink}{%
+  \ifdefined\tracebenchDocsCombinedManualMode
+    \hyperref[sec:simulink-build-metadata-stage]{build metadata stage}%
+  \else
+    \href{simulink_generated_metadata_schema.pdf}{build metadata stage}%
+  \fi
+}
+
+\docTitle{Environments}
+\phantomsection\label{docstart:environment_profiles}
+
+\section*{Overview}
+
+This document describes the manually created files under \code{models/simulink/<simulator_id>/} that define a \name{} \termSimulator.
+These files, together with  \code{simulink_model_original.mdl}, define a simulator environment and are necessary to generate candidate runs, simulate them, add noise, and render prompts. 
+\phantomsection\label{sec:allowed-tracebench-models}
+Additionally, \termSimulator needs to be added to \hyperref[sec:allowed-tracebench-models]{\code{shared/benchmark_utils.py::ALLOWED_TRACEBENCH_MODELS}} and the \environmentBuildMetadataStageLink{} needs to be run.
+
+
+The files are located in \code{models/simulink/<simulator_id>/}.
+\newcommand{\environmentTreeSimulinkModelOriginal}{\hyperref[sec:environment-simulink-model-original]{simulink\_model\_original.mdl}}
+\newcommand{\environmentTreeDescriptionLevels}{\hyperref[sec:environment-description-levels]{description\_levels.json}}
+\newcommand{\environmentTreeExperimentConfig}{\hyperref[sec:environment-experiment-config]{experiment\_config.json}}
+\newcommand{\environmentTreeNoiseAdder}{\hyperref[sec:environment-noise-adder]{noise\_adder.py}}
+\newcommand{\environmentTreeGenerationPolicy}{\hyperref[sec:generation-policy-schema]{generation\_policies/\textless policy\_id\textgreater.json}}
+\newcommand{\environmentTreeDetectabilitySpecific}{\hyperref[sec:environment-detectability-specific]{detectability\_specific\_environment.py}}
+\begin{LinkedDocCode}
+models/simulink/<simulator_id>/
+|-- \environmentTreeSimulinkModelOriginal
+|-- \environmentTreeDescriptionLevels
+|-- \environmentTreeExperimentConfig
+|-- \environmentTreeNoiseAdder
+|-- \environmentTreeGenerationPolicy
+|-- \environmentTreeDetectabilitySpecific\quad
+\end{LinkedDocCode}
+
+In the following each of these files is described.
+\phantomsection\label{sec:generation-policy-schema}
+\subsection*{Generation Policy Schema}
+
+
+\paragraph{Policy Generation}
+Note that the original public test release on Hugging Face did not use this generation-policy-based sampling pipeline. 
+After introducing generation policies, we backfilled a 10k-family candidate pool for each simulator from the original dataset release, using the same sampling distribution used to construct the test set.
+
+Since this way of sampling was introduced after the first public released of the dataset, we have a 10k version for each of the \termSimulator in the first version in distribution with the test set. 
+
+
+The runs are sampled a generation policy.
+
+A generation policy defines:
+
+\begin{itemize}
+\item how many candidate families to generate;
+\item how to sample baseline parameters and initial states;
+\item how many interventions to sample, and how to sample intervention times and post-intervention values.
+\end{itemize}
+
+Candidate generation resolves the policy into a concrete plan before simulation.
+
+\subsubsection*{Top-Level Fields}
+
+Required top-level fields in a generation policy. All fields listed in this table are required.
+
+\begin{center}
+\begin{tabular}{p{0.28\linewidth}p{0.60\linewidth}}
+\hline
+\textbf{Field} & \textbf{Meaning} \\
+\hline
+\code{policy_id} & Non-empty identifier for the policy. Should match the filename stem. \\
+\code{model} & \termSimulator identifier under \code{models/simulink/<simulator_id>}. \\
+\code{seed} & Integer seed used to make candidate generation reproducible. \\
+\code{target_candidate_families} & Number of baseline-centered candidate families to sample. \\
+\code{baseline_sampler} & Defines how baseline parameters and initial states are sampled. \\
+\code{intervention_sampler} & Defines intervention parameters, directions, times, and values. \\
+\hline
+\end{tabular}
+\end{center}
+
+\subsubsection*{Minimal Shape}
+
+\begin{DocCode}
+{
+  "policy_id": "production_v1",
+  "model": "BallDrop",
+  "seed": 456,
+  "target_candidate_families": 1000000,
+  "baseline_sampler": {
+    "method": "latin_hypercube"
+  },
+  "intervention_sampler": {
+    "parameters": "all",
+    "directions": ["increase", "decrease"],
+    "children_per_parameter_direction": 3,
+    "intervention_time": {
+      "distribution": "uniform",
+      "min_fraction_of_horizon": 0.2,
+      "max_fraction_of_horizon": 0.8
+    },
+    "value_sampler": {
+      "method": "conditional_uniform",
+      "distance_space": "sampling",
+      "min_abs_distance_multiplier": 1.0,
+      "min_srd_distance_multiplier": 1.0
+    }
+  }
+}
+\end{DocCode}
+
+\subsubsection*{\texorpdfstring{\titlecode{baseline_sampler}}{baseline\_sampler}}
+
+\code{baseline_sampler} defines how baseline parameters and initial-state variables are sampled.
+It samples over the variables listed in:
+
+\begin{DocCode}
+experiment_config.json::exposed_variables.parameters
+experiment_config.json::exposed_variables.initial_state
+\end{DocCode}
+
+The sampler must respect all \code{allowed_intervals} defined in \code{experiment_config.json}.
+
+\paragraph{Schema}
+
+\begin{DocCode}
+"baseline_sampler": {
+  "method": "latin_hypercube",
+  "variables": {
+    "mass": {
+      "distribution": "loguniform"
+    },
+    "gravity": {
+      "distribution": "uniform"
+    },
+    "initial_height": {
+      "distribution": "uniform"
+    }
+  },
+  "baseline_min_distance_scale": 0.2
+}
+\end{DocCode}
+
+\paragraph{Fields}
+
+\begin{itemize}
+\item \code{method}: required string. Allowed values are \code{independent}, \code{latin_hypercube}, \code{sobol}, and \code{grid}.
+\item \code{variables}: optional object keyed by exposed variable name. It overrides the default distribution for selected variables.
+\item \code{baseline_min_distance_scale}: optional non-negative number. If present, generated baselines should be separated from one another according to the policy's diversity constraint.
+\end{itemize}
+
+Allowed variable-level distributions are \code{uniform,loguniform,fixed}.
+For \code{uniform} and \code{loguniform}, an optional
+\code{interval = [lower, upper]} may condition sampling on a strict sub-interval
+of the variable's environment-level \code{allowed_intervals}.  The conditioned
+interval must be finite, increasing, and entirely contained in the
+environment-level interval; it does not change the environment contract.
+
+\subsubsection*{\texorpdfstring{\titlecode{intervention_sampler}}{intervention\_sampler}}
+
+\code{intervention_sampler} defines how intervention children are generated from each baseline family.
+
+\paragraph{Schema}
+
+\begin{DocCode}
+"intervention_sampler": {
+  "parameters": "all",
+  "directions": ["increase", "decrease"],
+  "children_per_parameter_direction": 3,
+  "intervention_time": {
+    "distribution": "uniform",
+    "min_fraction_of_horizon": 0.2,
+    "max_fraction_of_horizon": 0.8
+  },
+  "value_sampler": {
+    "method": "conditional_uniform",
+    "distance_space": "sampling",
+    "min_abs_distance_multiplier": 1.0,
+    "min_srd_distance_multiplier": 1.0
+  }
+}
+\end{DocCode}
+
+\paragraph{Fields}
+
+\begin{itemize}
+\item \code{parameters}: \code{"all"} or a non-empty list of names from \code{experiment_config.json::exposed_variables.parameters}; \code{"all"} selects all listed parameters.
+\item \code{directions}: non-empty list containing \code{"increase"}, \code{"decrease"}, or both.
+\item \code{children_per_parameter_direction}: positive integer.
+\item \code{intervention_time}: object defining how intervention times are sampled.
+\item \code{value_sampler}: object defining how post-intervention values are sampled.
+\end{itemize}
+
+Only variables listed in \code{experiment_config.json::exposed_variables.parameters} may be intervened on.
+Variables listed under \code{initial_state} are baseline-only variables and must not change after simulation start.
+
+\paragraph{\texorpdfstring{\titlecode{intervention_time}}{intervention\_time}}
+
+\code{intervention_time} defines how the step-change time is sampled.
+
+\begin{DocCode}
+"intervention_time": {
+  "distribution": "uniform",
+  "min_fraction_of_horizon": 0.2,
+  "max_fraction_of_horizon": 0.8
+}
+\end{DocCode}
+
+Allowed fields:
+
+\begin{itemize}
+\item \code{distribution}: required string. Allowed values are \code{uniform}, \code{fixed}, and \code{choice}.
+\item \code{min_fraction_of_horizon}: required for \code{uniform}. Float in \code{[0,1]}.
+\item \code{max_fraction_of_horizon}: required for \code{uniform}. Float in \code{[0,1]}.
+\item \code{value}: required when \code{distribution} is \code{fixed}.
+\item \code{values}: required when \code{distribution} is \code{choice}.
+\end{itemize}
+
+All intervention times must satisfy:
+
+\begin{DocCode}
+0 < intervention_time < experiment_config.json::end_time_input_s
+\end{DocCode}
+
+If \code{min_fraction_of_horizon} and \code{max_fraction_of_horizon} are used, the actual interval is computed from \code{experiment_config.json::end_time_input_s}.
+
+\paragraph{\texorpdfstring{\titlecode{value_sampler}}{value\_sampler}}
+
+\code{value_sampler} defines how the post-intervention value is sampled for each changed parameter.
+
+\begin{DocCode}
+"value_sampler": {
+  "method": "conditional_uniform",
+  "distance_space": "sampling",
+  "min_abs_distance_multiplier": 1.0,
+  "min_srd_distance_multiplier": 1.0,
+  "max_srd_distance_multiplier": 1.2
+}
+\end{DocCode}
+
+Allowed \code{method} values:
+
+\begin{itemize}
+\item \code{conditional_uniform}: uniformly sample valid values on the requested side of the baseline value after applying distance constraints.
+\item \code{fixed_delta}: add or subtract a fixed amount. Requires \code{delta}.
+\item \code{fixed_srd}: sample values targeting a fixed SRD distance. Requires \code{target_srd}.
+\end{itemize}
+
+\code{distance_space} is optional and accepts \code{linear} or \code{sampling}; the default is \code{linear} for backward compatibility.
+For a \code{loguniform} variable, \code{sampling} applies the SRD distance constraint in logarithmic sampling space, while the minimum absolute-distance constraint remains in the variable's original units.
+For other distributions the two modes are equivalent.
+\code{max_srd_distance_multiplier} is optional.  When present, it places an
+upper bound on the sampled distance in the selected distance space and must be
+greater than or equal to \code{min_srd_distance_multiplier}.  It is useful for
+targeted yield pilots that must avoid needlessly extreme changes while retaining
+the environment-level minimum distance.
+
+The generated post-intervention value must satisfy all of the following:
+
+\begin{itemize}
+\item it lies inside \code{experiment_config.json::exposed_variables.parameters::<parameter>::allowed_intervals};
+\item it changes exactly one root-cause parameter;
+\item its absolute distance from the baseline value is at least the environment-level \termMinAbsDist{} multiplied by \code{min_abs_distance_multiplier};
+\item its SRD distance from the baseline value is at least the environment-level \termMinSRDDistance{} multiplied by \code{min_srd_distance_multiplier};
+\item when \code{max_srd_distance_multiplier} is present, its distance in the
+selected distance space is at most the environment-level
+\termMinSRDDistance{} multiplied by that value.
+\end{itemize}
+
+If no valid value exists for a requested parameter and direction, the generator must not create a runnable child node.
+The missing direction must instead be recorded in \code{generation_report.json}.
+
+\phantomsection\label{sec:environment-description-levels}
+\subsection*{\texorpdfstring{\titlecode{description_levels.json}}{description\_levels.json}}
+
+\code{description_levels.json} contains \termSimulator-specific text used by the prompt renderer.
+It has:
+\begin{itemize}
+\item \code{textual_description}: object keyed by \termDescLevel.
+\begin{itemize}
+\item \code{high}: detailed natural-language description, including relevant equations, observed channels, and root-cause parameters.
+\end{itemize}
+\item \code{observed_signals_description}: signal description used in prompts.
+\item \code{internal_naming_to_agent_facing_signal}: object mapping internal signal names to agent-facing signal descriptions.
+The non-\code{time} keys must match \code{experiment_config.json::observable_signals::observable_signals} exactly and in the same order.
+\begin{DocCode}
+{
+  "signal_internal_name_0": "agent-facing description 0",
+  "signal_internal_name_1": "agent-facing description 1",
+  "time": "time"
+}
+\end{DocCode}
+\item \code{internal_naming_to_agent_facing_parameter}: object mapping internal intervenable parameter names from \code{experiment_config.json::exposed_variables.parameters} to agent-facing labels.
+\end{itemize}
+
+
+\phantomsection\label{sec:environment-experiment-config}
+\subsection*{\texorpdfstring{\titlecode{experiment_config.json}}{experiment\_config.json}}
+
+\code{experiment_config.json} defines the environment contract.
+It should contain:
+
+\begingroup
+\footnotesize
+\renewcommand{\arraystretch}{1.12}
+\setlength{\tabcolsep}{4pt}
+\begin{longtable}{|P{0.27\textwidth}|P{0.18\textwidth}|P{0.45\textwidth}|}
+\caption{Experiment config top-level fields.}\\
+\hline
+\textbf{Name} & \textbf{Type} & \textbf{Description} \\
+\hline
+\endfirsthead
+\hline
+\textbf{Name} & \textbf{Type} & \textbf{Description} \\
+\hline
+\endhead
+\code{paper_facing_name} & string & Environment name used in the paper and generated tables. \\
+\hline
+\code{exposed_variables} & object & Variables externally exposed to \name{}. \\
+\hline
+\code{observable_signals} & object & Non-time channels observed by agents and metrics. \\
+\hline
+\code{sampling_rate_hz} & positive number & Target sampling rate for materialized trajectories. \\
+\hline
+\code{end_time_input_s} & positive number & Simulation horizon. \\
+\hline
+\code{detectability} & object & Thresholds used by Stage: Cheap Filter Metrics. \\
+\hline
+\end{longtable}
+\endgroup
+\agentProposedEdit
+  {agent-add-3e3ae322-e7bf-5762-b638-e99a444010eb}
+  {Add this agent-authored block for review.}
+  {}
+  {The optional top-level boolean \code{allow_family_baseline_reuse} determines whether multi-worker simulation may use Fast Restart family-baseline reuse and defaults to \code{true} when omitted.
+When \code{allow_family_baseline_reuse} is \code{false}, baselines and interventions use the individual simulation path even when multiple MATLAB workers are available.}
+
+\subsubsection*{\code{exposed_variables}}
+
+\code{exposed_variables} has two groups:
+
+\begin{itemize}
+\item \code{parameters}: root-cause parameters that may be changed by an intervention.
+\item \code{initial_state}: baseline-only state variables that are sampled at the start of a run and must not change after simulation start.
+\end{itemize}
+
+Each exposed variable should define:
+
+\begin{itemize}
+\item \code{allowed_intervals}: legal range \code{[min, max]}.
+\item \termMinSRDDistance
+\item \termMinAbsDist
+\end{itemize}
+
+\subsubsection*{\code{observable_signals}}
+
+\code{observable_signals} defines the channels that agents and downstream metrics see.
+
+\begin{itemize}
+\item \code{observable_signals}: ordered list of non-time signal names.
+\item \code{signal_type}: object keyed by signal name. Each value has \code{type}, which is either \code{continuous} or \code{impulse_like}.
+\end{itemize}
+
+\subsubsection*{\code{detectability}}
+
+\code{detectability} contains the thresholds used by Stage: Cheap Filter Metrics to decide whether an intervention is visible in the observed signals.
+It is divided into continuous-signal rules, impulse-like-signal rules, and per-signal RMS thresholds.
+
+\begingroup
+\footnotesize
+\renewcommand{\arraystretch}{1.12}
+\setlength{\tabcolsep}{4pt}
+\begin{longtable}{|P{0.20\textwidth}|P{0.28\textwidth}|P{0.42\textwidth}|}
+\caption{Detectability fields.}\\
+\hline
+\textbf{Block} & \textbf{Field} & \textbf{Meaning} \\
+\hline
+\endfirsthead
+\hline
+\textbf{Block} & \textbf{Field} & \textbf{Meaning} \\
+\hline
+\endhead
+\code{continuous} & \code{min_srd_distance} & Minimum \termSRD distance used for threshold-crossing detection on continuous signals. \\
+\hline
+\code{continuous} & \code{epsilon_SRD} & Epsilon term used in the \termSRD denominator. \\
+\hline
+\code{continuous} & \code{minimum_consecutive_below_SRD} & Number of consecutive samples that must exceed the \termSRD threshold before a difference is recorded. \\
+\hline
+\code{impulse_like} & \code{min_srd_distance} & Minimum \termSRD distance used for impulse-like signals. \\
+\hline
+\code{impulse_like} & \code{epsilon_SRD} & Epsilon term used in the \termSRD denominator for impulse-like signals. \\
+\hline
+\code{RMS_thresholds} & \code{<signal_name>} & Per-signal RMS threshold used to decide whether two trajectories are sufficiently different. \\
+\hline
+\end{longtable}
+\endgroup
+
+\phantomsection\label{sec:environment-noise-adder}
+\subsection*{\texorpdfstring{\titlecode{noise_adder.py}}{noise\_adder.py}}
+
+\code{noise_adder.py} implements the \termSimulator-specific observation-noise profiles.
+It must expose:
+
+\begin{itemize}
+\item \agentProposedEdit{agent-remove-5ce36589-28c0-5edb-aeef-5c3c6af3816c}{current NOISE_DICT contains explicit low and high profile objects}{\code{NOISE_DICT}: \termSimulator-specific base observation-noise magnitudes for the low-noise regime \code{low}, typically keyed by observable signal.}{}
+\agentProposedEdit{agent-remove-1ad4fe81-0409-566e-86d4-49af79132bd2}{NOISE_LEVEL_MULTIPLIER does not exist in the current interface}{The high-noise regime is obtained by multiplying these magnitudes by the shared \code{NOISE_LEVEL_MULTIPLIER["high"]}; \code{none} uses multiplier \code{0}.}{}
+\phantomsection\label{def:noise-adder-interface}
+\end{itemize}
+
+\begin{DocCode}
+def quantify_noise(clean: pd.DataFrame, noisy: pd.DataFrame, reference: pd.DataFrame) -> dict
+\end{DocCode}
+
+\agentProposedEdit{agent-remove-58b7e3b1-88c3-5bfb-8a1f-e34062a45273}{the terminology page should contain paper terminology rather than utility pseudocode}{The \code{add_noise(...)} interface is defined in \hyperref[def:add-noise-utility]{Terminology and Common Utilities}.}{}
+\agentProposedEdit
+  {agent-add-fdb79479-2ff2-5c0c-9906-e0bbc466c0d5}
+  {Add this agent-authored block for review.}
+  {}
+  {The observation-noise implementation contract is documented locally in this environment-profile section through \code{noise_adder.py}, \code{NOISE_DICT}, and the required callable interface.}
+
+\phantomsection\label{sec:environment-detectability-specific}
+\subsection*{Optional Implementation Hooks}
+
+\code{detectability_specific_environment.py} exposes:
+
+\begin{DocCode}
+def is_detectable(intervention: pd.DataFrame, baseline: pd.DataFrame, run_parameters: dict, intervention_time: float, min_first_diff: float | None) -> str
+\end{DocCode}
+
+This hook is an environment-specific veto used by Stage: Cheap Filter Metrics.
+If it returns \code{"no"}, the child is marked as not detectable even if the generic RMS checks pass.
+
+
+\section*{Validation Rules}
+\phantomsection\label{sec:environment-validation-rules}
+
+\subsection*{Validation overview}
+
+Validation exists to catch user-authored environment mistakes before they reach expensive MATLAB simulation batches.
+The checks are enforced across the metadata build in \code{workflows/simulate/build_metadata.py}, run-graph compilation in \code{workflows/generate_runs/compile_run_graph.py}, simulation preflight in \code{workflows/simulate/run_pending_sims.py}, and cheap-filter validation in \code{workflows/metrics/compute_metrics.py}.
+
+The environment-level checklist includes:
+
+\begin{itemize}
+\item \code{description_levels.json::textual_description::<desc_level>} for \termDescLevel in \{\code{high}\} must start with ``by simulating'' when it is appended to the shared prompt text.
+\item \code{description_levels.json::internal_naming_to_agent_facing_signal} must be a non-empty object.
+\item The keys of \code{description_levels.json::internal_naming_to_agent_facing_signal}, excluding \code{time}, must match \code{experiment_config.json::observable_signals::observable_signals} exactly and in the same order.
+\item The signals listed in \code{experiment_config.json::observable_signals::observable_signals} must appear in either \code{generated/metadata.json::simulink_signals_available} or \code{generated/metadata.json::simscape_signals_available}.
+\end{itemize}
+
+The full environment-by-environment catalog is collected in the paper appendix, under \hyperref[docstart:appendix_environment]{Appendix: Environment Catalog}.
+
+\end{document}

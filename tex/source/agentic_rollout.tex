@@ -1,0 +1,334 @@
+\documentclass[11pt]{article}
+\usepackage{manual_docs_style}
+\externaldocument{overleaf_paper/build/main}[overleaf_paper/archive/compiled/main.pdf]
+
+\begin{document}
+
+\docTitle{Stage: Agentic Rollout}
+\phantomsection\label{docstart:agentic_rollout}
+
+This stage runs the agentic experiments. 
+These experiments generate artifacts that are later submitted for evaluation or used for additional post-processing. 
+It also provides a convenient way to manage, resume, and inspect rollouts.
+Experiments can be expensive, so rollout supports both API-key authentication and CLI-account authentication, with CLI-account authentication preferred when available.
+CLI-account authentication may hit temporary service unavailability or subscription rate limits.
+Specifically, when a Claude Code CLI-account run hits the five-hour or weekly subscription limit, the runner waits until the provider-reported reset time and then continues the same question run, preserving the existing task container and intermediate files, instead of recording the attempt as a failed paper result.
+The maximum number of rate-limit retries is controlled by the \code{MAX_RETRY_COUNT_RATE_LIMIT} environment variable.
+If unset, the default is \code{10}; setting it to \code{0} disables rate-limit retry.
+Additional motivation on how experiments are run is available in the
+\hyperref[sec:experimental-setup]{experimental section of the paper}.
+
+
+\begin{itemize}
+  \item \code{workflows/rollout/question_run_orchestrator.py}, which orchestrates the runs. It supports discriminated unions, a resume option, and the plan/materialize/reconcile pattern.
+  \item \code{workflows/rollout/run_single_question.py}, which executes the individual runs in containers.
+  \item \code{workflows/rollout/cleanup_tb_question_resources.sh}, \agentProposedEdit{agent-remove-3ebb4e5b-2284-5203-a193-5d42d12e19e0}{cleanup is restricted to matching question resources}{which kills any running container, i.e. if we run --keep-container}{}.
+\end{itemize}
+
+This stage depends only on the artifact \code{TraceBench_questions} export bundle.
+It relies on \code{terminal_bench} to actually run the experiments.
+The required credentials depend on the selected agent platform; see 
+
+
+\section*{Orchestrator}
+\begin{DocCode}
+python workflows/rollout/question_run_orchestrator.py \
+  --tasks-dir TraceBench_questions \
+  --agent-id AGENT_ID [AGENT_ID ...] \
+  [--question-slug QUESTION_SLUG [QUESTION_SLUG ...]] \
+  [--row-slug ROW_SLUG [ROW_SLUG ...]] \
+  [--shot-slug SHOT_SLUG [SHOT_SLUG ...]] \
+  --model SIMULATOR [SIMULATOR ...] \
+  [--dry-run] \
+  [--resume configuration-file-path [--heal]] \
+  [--number-of-runs-in-parallel-per-agent <n>] \
+  [--tag <tag>] \ 
+  [--call-adapter] \
+  [--name <name>]
+\end{DocCode}
+Note that:
+\begin{itemize}
+  \item \agentProposedEdit{agent-remove-e46b4fed-2aed-5547-a0b0-4c5f759ca703}{the heal option is allowed with resume}{When \code{--resume} is passed, no other arguments may be passed.}{}
+  Arguments are read directly from the \code{configuration-file-path}.
+  \item Only one of \code{--question-slug}, \code{--row-slug},  \code{--shot-slug}, \code{--resume} can be passed simultaneously.
+  \item \code{--tag} Tag to attach to each run. Default: DEBUG
+  \item \code{--name} Name of the configuration file. If name is not specified, then it's the current <timestamp>. If a file already exists with the same name it throws an error.
+\end{itemize}
+
+
+\subsection*{Internal steps}:
+\begin{enumerate}
+  \item Validate the command-line arguments
+  \phantomsection\label{sec:agentic-rollout-run-configurations}
+  \item Build a JSON configuration file at \code{run_configurations/<name>.json}:
+  \begin{DocCode}
+    {
+      "timestamp": "...",
+      "name": "...",
+      "models": ["<simulator_id>", "..."],
+      "number_of_runs_in_parallel_per_agent": 1,
+      "total_runs": 1,
+      "runs": [
+        {
+          "question_schema": "...",
+          "question_slug": "...",
+          "model": "...",
+          "agent_id": "...",
+          "agentic_run_id": "...",
+          "status": "PENDING",
+          "path_to_the_run": "terminal-bench/runs/<agentic_run_id>",
+          "agent_prompt": "...",
+          "question": {
+            "recipe_info": { "..." : "..." }
+          }
+        }
+      ]
+    }
+    \end{DocCode}
+  where:
+  \begin{itemize}
+    \item \code{question_schema} is from \code{TraceBench_questions/<simulator_id>/questions.json::question}
+    \item \code{status} can be one of PENDING|ERROR|DONE|RUNNING
+    \item \code{path_to_the_run}: location of the run of the form \code{terminal-bench/runs/<agentic_run_id>}. 
+    Note this does not exist if the run is not effectively run.
+    \item \code{agent_prompt}: the user prompt that starts the experiment. 
+  \end{itemize} 
+  This script internally works as follow
+    \begin{enumerate}
+      \item It resolves any placeholder values with their corresponding values, specifically \code{questions.<question_slug>.question_text.possible_interventions}.
+    \end{enumerate}
+    \item if \code{--call-adapter} is passed then it also calls \code{terminal-bench/adapters/TraceBench/run_adapter.py} (i.e step 2) of the main driver.
+    \agentProposedEdit
+      {agent-add-52d94690-6a58-5f1e-b445-31eda7c899a6}
+      {Add this agent-authored block for review.}
+      {}
+      {Correction: the adapter currently lives at \code{terminal-bench/adapters/tsENV/run_adapter.py}.}
+    Note that if the targer folder in \code{terminal-bench/tasks_runtime/manual/<simulator_id>/<question_slug>/question_0/agent_payload} already exists, the script will first delete it and recreate it.
+    \item \code{question.recipe_info.*}: All the information stored at \code{question.recipe_info.*}
+    \item The agent prompt is created from \hyperref[sec:generate-question-question-text]{\code{question_text}} by calling \code{shared/prompts.py::render_tracebench_agent_prompt}.
+
+  Note instead with \code{--resume} \code{configuration-file-path} we load the file and skip this step. 
+  If \code{--heal} is passed we also delete \code{path_to_the_run} and set again to "PENDING" the runs that are set to "ERROR"
+  \item Call \code{workflows/rollout/run_single_question.py},   \code{--number-of-runs-in-parallel-per-agent} times in parallel.
+  \item Update the status of the configuration files.
+\end{enumerate}
+
+\section*{Main Driver}
+This script actually runs the jobs and creates the output artifacts. It can be called multiple times, provided that the \code{run_id} is different.
+Example invocation:
+\begin{DocCode}
+python workflows/rollout/run_single_question.py \
+  --model SIMULATOR \
+  --question-slug QUESTION_SLUG \
+  --agent-id AGENT_ID \
+  --agentic-run-id AGENTIC_RUN_ID \
+  [--keep-container] \
+  [--single-run]
+\end{DocCode}
+
+Additional flags:
+\begin{itemize}
+  \item \code{--keep-container}: keeps the container alive after the run.
+  \item \code{--single-run}: isolated debugging mode; allows Docker image cleanup after completion. 
+  Do not use this for orchestrated parallel rollout.
+\end{itemize}
+
+Internal steps:
+\begin{enumerate}
+  \item Check that all required environment variables are set and validate profiles.
+  \item Call \code{terminal-bench/adapters/TraceBench/run_adapter.py}, which uses \code{adapter.py} to create the folder uploaded to the container by performing the following steps.
+  \agentProposedEdit
+    {agent-add-4c9c5af4-6a41-5ce5-b3af-fce13e31b016}
+    {Add this agent-authored block for review.}
+    {}
+    {Correction: the current adapter path is \code{terminal-bench/adapters/tsENV/run_adapter.py}.}
+  Note that this step is skipped if the \code{terminal-bench/tasks_runtime/manual/<simulator_id>/<question_slug>} already exists and the \code{question.json::version} matches the one in \code{scenario_info.json::question_schema}
+  \begin{enumerate}
+    \item Obtain the anonymised time series with its corresponding noise analysis by calling \code{materialize(...)}.
+    \item Create the \code{agent_payload} folder with the train and test samples, plus \code{train_labels.json} when needed, and copy the files there in Parquet format.
+    \code{train_labels.json} is keyed by the sample UUID filename, i.e. \code{"<uuid>.parquet": "mass"} in case \termDescLevel != none, else it is \code{"<uuid>.parquet": "label_0"} where the possible labels go up to the number of possible classes.
+    \item Create the agent user prompt by calling \code{shared/prompts.py::render_tracebench_agent_prompt(question_text: Mapping[str, Any]) -> str}.
+  \end{enumerate}
+  The output of this step is \code{terminal-bench/tasks_runtime/manual/<simulator_id>/<question_slug>} and contains among other things:
+  \begin{itemize}
+    \item \code{task.yaml} with instruction which is exactly the same prompt given to the agent
+    \item \agentProposedEdit{agent-remove-37999d58-5a9e-5d77-81af-122a0b0cdb9f}{noise analysis now uses quantify_analysis for the active materialized profile}{\code{noise_analysis.json}: a JSON file containing, for each UUID sample in \code{test_samples} and optionally \code{train_samples}, the output of \code{quantify_effect_snr} for the SNR of each noise profile used to materialize that sample (without any reference)}{}
+    \begin{DocCode}
+      {
+        "17a033a89614421b8bb520c3bb286b60.parquet": {[...]},
+        "1b4abf9677a956e4bb90051b4494f4b3.parquet": {[...]}
+      }
+    \end{DocCode}
+  \end{itemize}
+  \item Call \verb|uv run tb run ...| to start the agentic run using terminal-bench harness.
+  \begin{itemize} 
+    \item Copy \code{terminal-bench/tasks_runtime/manual/<simulator_id>/<question_slug>/question_0/agent_payload} to a \code{tmp/<runid>/agent_payload} folder to avoid any race condition
+    \item Inside \code{/app} in the container, copy \code{tmp/<runid>/agent_payload}/
+    This should be the folders \code{test_samples/<uuid>.parquet}, and optionally if the question has train samples, should also include \code{train_samples/<uuid>.parquet}, and \code{train_labels.json}.
+    \item Run the agent, by using the command detailed in Platform Startup Commands in \code{docs/overleaf_paper/tex/fragments/appendix/appendix_agents.tex}.
+    \item Collect all files in the \code{/app} folder, except the original inputs, and move them to \code{artifacts/}.
+    If the \code{platform=="opencode"}, also run the OpenCode export procedure:
+    \begin{enumerate}
+      \item After the agent finishes, export the completed OpenCode session inside the container.
+      \item Redirect stdout directly to the mounted agent-log file:
+      \begin{DocCode}
+opencode export <session_id> > /agent-logs/opencode-session-<session_id>.json
+      \end{DocCode}
+      \item Do not capture \code{opencode export} stdout through a pipe before writing the file, because OpenCode has had truncated JSON failures when large export payloads are written through piped stdout.
+      \item Validate that \code{/agent-logs/opencode-session-<session_id>.json} is valid JSON before accepting the run artifact.
+    \end{enumerate}
+
+  \end{itemize}
+  \item Cleanup depends on whether the run is an orchestrated rollout or an isolated \code{--single-run}.
+       For parallel orchestrated rollout, Terminal-Bench runs \code{docker compose down --volumes} and must not remove images, because parallel trials for \code{question_0} share the client image tag \code{tb__question_0__client}.
+       Removing images with \code{--rmi all} can race with another trial that has just built the image and is about to start its container.
+       For isolated debugging with \code{--single-run}, \code{docker compose down --rmi all --volumes} is allowed.
+  \item Run the post-rollout steps:
+  \begin{itemize}
+    \item It calls the Artifact scoring script \code{python workflows/rollout/evaluate_artifact.py <agentic_run_id>}
+    \item It calls the trajectory export \code{python workflows/rollout/export_atif_trajectory.py <agentic_run_id>}
+    \item \agentProposedEdit{agent-remove-63a920d5-e818-50d5-b37d-38655670bea6}{the driver invokes the plural trajectories wrapper}{It calls the trajectory evaluation \code{python workflows/trajectory/trajectory_evaluation_programmatic.py <agentic_run_id>}}{}
+    \agentProposedEdit
+      {agent-add-0424c831-6fcc-5571-b048-ab8bc0e81a72}
+      {Add this agent-authored block for review.}
+      {}
+      {Correction: the current trajectory evaluator path is \code{workflows/trajectories/trajectory_evaluation_programmatic.py}.}
+  \end{itemize}
+\end{enumerate}
+  
+Note that:
+\begin{itemize}
+\item The container has no internet access except for model API calls routed through a proxy, and Python 3.13 is installed with the ML libraries defined at \code{terminal-bench/adapters/TraceBench/template/Dockerfile}.
+\agentProposedEdit
+  {agent-add-52a538c2-b55f-5da7-b3e6-efa38dad1f36}
+  {Add this agent-authored block for review.}
+  {}
+  {Correction: the current Dockerfile path is \code{terminal-bench/adapters/tsENV/template/Dockerfile}.}
+\end{itemize}
+
+\phantomsection
+\section*{Materialized Output}
+\label{sec:agentic-rollout-materialized-output}
+Stored under:
+\begin{DocCode}
+terminal-bench/runs/<ID>/question_0
+\end{DocCode}
+
+The directory contains:
+\begin{itemize}
+  \item \code{scenario_info.json}
+  \begin{itemize}
+    \item identifier related \code{question_id}, \code{agent_id}, \code{tag}
+    \item \code{question_schema} from \code{TraceBench\_questions/<simulator_id>/questions.json::question}
+    \item \code{configuration_file_name}: if it was started using a configuration file name, it reports the name here
+    \item instruction related \code{instruction_agent_format}
+    \item recipe related \termDescLevel, \code{shot}, \code{noise_level}
+    \item \agentProposedEdit{agent-remove-e4179c3a-d37b-56e7-b747-ffd7a56554e8}{scenario_info does not contain this field}{\code{agent_started}: It's True if the agent started (i.e. the agent output at least one "agent") message, otherwise it's false}{}
+  \end{itemize}
+  \item \code{results.json}
+  \item \code{artifacts/*}
+  \item \code{agent_logs/rollout}
+  \item \code{agentic-final-response.json}
+\end{itemize}
+
+\subsection*{Kill running resources}
+
+\agentProposedEdit{agent-remove-4fdf23d6-8a5e-5635-ba32-02af68494a19}{cleanup is restricted to matching question resources}{The cleanup command kills any running container, i.e. if we run \code{--keep-container}:}{}
+\begin{DocCode}
+workflows/rollout/cleanup_tb_question_resources.sh [--run-id RUN_ID ...] [--dry-run]
+\end{DocCode}
+\agentProposedEdit{agent-remove-536f4e91-c084-5bee-8b34-e17ee111dff9}{cleanup targets matching question resources and includes stopped containers}{By default it removes all the running containers and any resource that starts with \code{/question_0-}.}{}
+If \code{--dry-run} is passed then it only lists what will be deleted.
+
+\section*{Appendix}
+
+
+\section*{Authentication and Environment Variables}
+
+  Rollout uses the selected agent profile to decide which platform credentials are required.
+  Credentials can be exported in the shell or placed in the repository \code{.env}; the rollout runner reads
+  \code{.env} for the platform-specific auth settings.
+
+  \begin{DocCode}
+  # Codex CLI
+  CODEX_AUTH_JSON_BASE64=
+
+  # Gemini CLI
+  GEMINI_AUTH_MODE=cli
+  GEMINI_CLI_AUTH=~/.gemini
+  # GEMINI_AUTH_MODE=api requires:
+  # GEMINI_API_KEY=
+
+  # Claude Code
+  CLAUDE_AUTH_MODE=subscription
+  CLAUDE_CODE_AUTH_DIR=~/.claude
+  CLAUDE_CODE_OAUTH_TOKEN=
+  MAX_RETRY_COUNT_RATE_LIMIT=10
+  # CLAUDE_AUTH_MODE=api requires:
+  # ANTHROPIC_API_KEY=
+
+  # OpenCode / OpenRouter
+  OPENROUTER_API=
+  OPENCODE_DISABLE_MODELS_FETCH=1
+  \end{DocCode}
+
+\subsubsection*{Platform Startup Commands}
+  \begin{itemize}
+    \item \code{codex}:
+  \begin{DocCode}
+  codex exec --sandbox danger-full-access --skip-git-repo-check --json --model <model>
+  [--config model_reasoning_effort=<reasoning>] -- <instruction>
+  \end{DocCode}
+
+  \item \code{claude-code}:
+  \begin{DocCode}
+  claude --model <model> --effort <reasoning> --verbose --output-format stream-json -p <instruction> --allowedTools <tools>
+  \end{DocCode}
+
+    \item \code{gemini-cli}:
+  \begin{DocCode}
+  gemini -p <instruction> -y --output-format json -m {model_alias}
+  \end{DocCode}
+  Note that the model alias needs to be defined a priori, and the alias configuration
+  must be available to Gemini CLI inside the container, for example at
+  \code{\textasciitilde/.gemini/settings.json} or in the project
+  \code{.gemini/settings.json}. For example:
+  \begin{DocCode}
+      {
+    "modelConfigs": {
+      "customAliases": {
+        "gemini_3_1_pro_high": {
+          "extends": "chat-base-3",
+          "modelConfig": {
+            "model": "gemini-3.1-pro-preview",
+            "generateContentConfig": {
+              "thinkingConfig": {
+                "thinkingLevel": "HIGH" #HERE LOw in the other cae
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+  \end{DocCode}
+    \item \code{opencode}:
+  \begin{DocCode}
+  opencode --model <model> run <instruction>
+  \end{DocCode}
+  \end{itemize}
+
+\subsection*{Logbook}
+
+\paragraph{Claude Code subscription auth in Docker.}
+On 2026-06-30 we compared a Claude Code run inside the Terminal-Bench Docker container with the same prompt run locally on the Mac.
+Both invocations used Claude Code subscription authentication rather than an API key: the Claude JSON stream reported \code{apiKeySource: none}. 
+The root cause was that the Docker run and the local run were not using the same Claude account or organization. 
+The local Mac used \code{/Users/tbe/.claude.json} with organization \code{e252ef4a-4cd9-4ddf-87f1-09fdb4b0cf48}; the remote Docker path used stale or partial state from \code{/home/tommaso/.claude} and reported organization \code{7128c5f0-c739-4273-a8d8-7f4d534de6be}. 
+Terminal-Bench copied only the directory named by \code{CLAUDE_CODE_AUTH_DIR} into the container as \code{/root/.claude}. 
+It did not copy the top-level \code{\textasciitilde/.claude.json}, and the container log explicitly reported that \code{/root/.claude.json} was missing.
+
+The observed symptom was a Docker-side Claude Code rate-limit rejection: \code{rateLimitType=five_hour} with \code{status=rejected}, while the local Mac run remained \code{status=allowed}. 
+To reproduce local Claude Code subscription auth inside Docker, sync both \code{\textasciitilde/.claude/} and \code{\textasciitilde/.claude.json}, and ensure the container sees them as \code{/root/.claude/} and \code{/root/.claude.json}.
+
+\end{document}

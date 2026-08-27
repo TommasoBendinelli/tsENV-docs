@@ -1,0 +1,411 @@
+\documentclass[11pt]{article}
+\usepackage{manual_docs_style}
+
+\begin{document}
+
+\docTitle{Stage: Agentic Trajectory Evaluation}
+\phantomsection\label{docstart:agentic_trajectory_evaluation}
+
+This stage extracts deterministic, auditable measurements from an agent trajectory represented in the
+\TexLink
+  {docs-TraceBench/atif_transcription.tex}
+  {docstart:atif_transcription}
+  {ATIF trajectory format}.
+The extracted measurements are the trajectory-level results reported in the paper.
+These results characterize how an agent turns the available task evidence into a submitted solution.
+They measure how much evidence the agent inspects, how it inspects that evidence, how it uses computational tools, and when and how it constructs the final artifact.
+This stage also supports debugging and auditing by generating trajectory PDFs that highlight the extracted measurements.
+
+
+\section*{Data flow and ownership}
+
+The evaluator takes \code{atif_trajectory.json} and \code{atif_trajectory.pdf.json} as inputs, as defined in the
+\TexLink
+  {docs-TraceBench/atif_transcription.tex}
+  {sec:atif-pdf-projection}
+  {Agent Trajectory Schema}.
+\begin{enumerate}
+  \item The programmatic evaluator writes \code{trajectory_evaluation.json}, which contains run-identity metadata and measurements covering interactions, tool use, Python use, tokens, cost, time, artifacts, per-agent-step measurements, and PDF auditing.
+  \item When valid provider-reconstructed token measurements are unavailable, the evaluator may call the corresponding provider's input-token-counting endpoint and materialize the results in \code{trajectory_evaluation.json}.
+  \item Consolidation and PDF rendering consume those materialized values.
+  Consolidation is described in the \href{experiment_plan.pdf}{Experiment Plan}.
+  PDF rendering is described below in the \hyperref[docstart:trajectory_pdf_visualiser]{Trajectory PDF audit} section.
+\end{enumerate}
+
+\section*{Usage}
+The evaluator accepts either a run identifier or an explicit run directory:
+\begin{DocCode}
+python workflows/trajectory/trajectory_evaluation_programmatic.py \
+  [<agentic_run_id>] \
+  [--path PATH] \
+  [--agent-step-tokens] \
+  [--refresh-agent-step-tokens] \
+  [--render-pdf]
+\end{DocCode}
+Exactly one of \code{<agentic_run_id>} and \code{--path} must be provided.
+\code{--agent-step-tokens} materializes missing or stale provider-counted per-step measurements.
+\code{--refresh-agent-step-tokens} rebuilds them while reusing valid entries in the content-addressed request cache.
+The evaluation output is saved to:
+\begin{DocCode}
+terminal-bench/runs/<agentic_run_id>/trajectory_evaluation.json
+\end{DocCode}
+If \code{--render-pdf} is passed, the evaluator also generates the trajectory PDFs under:
+\begin{DocCode}
+terminal-bench/runs/<agentic_run_id>/pdf/*
+\end{DocCode}
+
+For a canonical batch, the dedicated materializer performs a read-only dry run by default:
+\begin{DocCode}
+python workflows/trajectory/materialize_agent_step_metrics.py [<tags> ...]
+\end{DocCode}
+The dry run reports the selected trajectories, provider requests, cache hits, and request-body volume without requiring credentials or modifying evaluations.
+Provider calls and atomic updates to \code{trajectory_evaluation.json} occur only when \code{--execute} is added.
+Runs are processed serially, provider-specific request caps are enforced, and execution stops at the first incomplete trajectory.
+
+
+\section*{Trajectory metrics}
+\phantomsection\label{sec:trajectory-metrics}
+
+The following metrics are extracted from each trajectory.
+Their definitions here are authoritative, and a subset is reported in the paper.
+
+\begin{itemize}
+  \item The \textbf{Agent iterations (agent steps)} metric is the number of logical agent-response steps in the trajectory.
+  One agent step may contain multiple tool calls.
+
+  \item The \textbf{Tool calls} metric is the \code{tool_call_steps} field in \code{number_of_interactions.agent}.
+  Despite the legacy field name, it counts individual well-formed tool-call entries attached to agent steps, not agent steps containing calls.
+  Tool calls may therefore outnumber agent iterations.
+  The count must equal \code{tool_observation_steps}; otherwise, evaluation fails.
+
+  \item The \textbf{Python calls} metric is the total number of parsed Python invocations within supported shell-based tools.
+  Each repeated execution is counted separately.
+
+  \item The trajectory-level \textbf{Python statements} metric is the total number of Python abstract-syntax-tree statement nodes across the distinct Python source versions first displayed in the trajectory.
+
+  \item The \textbf{Plots generated} metric counts image-like artifacts created during the trajectory, including \code{.png}, \code{.jpg}, \code{.jpeg}, \code{.svg}, and \code{.pdf} files.
+
+  \item The \textbf{Plots inspected} metric counts generated plot artifacts that are subsequently read, opened, or viewed successfully with an image-capable tool.
+  Creating, listing, or mentioning a plot does not count as an inspection.
+
+  \item \phantomsection\label{metric:overall-numbers-printed}%
+  The \textbf{Overall numbers printed} metric is the total count of numeric literals visible in observations produced by Python or other tools.
+  It includes printed measurements, array elements, table entries, statistics, Python/NumPy-style forms such as \code{1237.}, \code{.5}, and \code{1.e-3}, and non-finite forms such as \code{nan}, \code{inf}, \code{+inf}, \code{-inf}, and \code{infinity}.
+  It excludes numeric literals that occur only in source code, execution-wrapper metadata, process identifiers, warnings, traceback diagnostics and their associated source context, synthetic file-reader line prefixes, image payloads, filesystem identifiers, and echoed Python source already shown in the tool call.
+
+  \item The \textbf{Total prompt tokens} metric is defined by \TexLink{docs-TraceBench/atif_transcription.tex}{sec:atif-final-metrics}{the ATIF final-metrics accounting rule}.
+
+  \item The \textbf{Total cost} metric is defined by \TexLink{docs-TraceBench/atif_transcription.tex}{metric:atif-total-cost}{the ATIF total-cost accounting rule}.
+  \item The \textbf{Total time} metric measures active agent-system wall-clock time, including model inference, tool execution, transport, and orchestration.
+  For an uninterrupted run, it is the elapsed time from the timestamp of the first \texttt{USER} step to the timestamp of the final \texttt{AGENT} step.
+  When a provider session limit divides a run into multiple recorded agent invocations, it is instead the sum of those invocations' recorded durations.
+  Each invocation contributes the largest valid terminal \code{duration_ms} in its attempt log, so duplicate terminal events are not counted twice.
+  The uninterrupted first-user-to-final-agent interval is retained as \code{elapsed_time_seconds}; \code{session_limit_wait_seconds} is the difference between that value and \code{total_time_seconds}.
+  The \code{total_time_method} field records whether the value uses \code{continuous_elapsed} or \code{summed_agent_attempt_durations}.
+  A retry-based value is unavailable if its attempt logs are missing, non-contiguous, invalid, or sum to more than the elapsed interval.
+
+  \item The \textbf{Context compaction count} metric is the number of recorded context-reset events.
+  The \textbf{Context compaction iterations} metric is the corresponding ordered list of \code{agent_iteration} values.
+
+\end{itemize}
+
+\noindent
+The complete \hyperref[sec:trajectory-evaluation-schema-appendix]{trajectory evaluation schema} is provided in the appendix.
+
+\section*{Trajectory PDF audit}
+\phantomsection\label{docstart:trajectory_pdf_visualiser}
+The trajectory PDF audit produces three PDFs that support inspection of the trajectory and its extracted metrics.
+To generate them, run \code{workflows/trajectory/render_trajectory.py} with options similar to those of the evaluator above.
+The script requires the following files:
+\begin{itemize}
+    \item \code{trajectory_evaluation.json}: run identity, trajectory counts, and audit metrics;
+    \item \code{scores.json}: accuracy and shortlist metrics;
+    \item \code{selected_runs.csv} and \code{manifest.json}: condition, environment, seed, and other selection context.
+\end{itemize}
+The script writes the following three outputs to the run's \code{pdf/} directory shown above:
+\begin{itemize}
+  \item The \textbf{standard PDF} renders the transcript.
+  \item The \textbf{debug PDF} highlights in yellow every numeric literal from an observation that contributes to the count.
+\end{itemize}
+
+\subsection*{PDF structure}
+Each trajectory begins with a summary of its metadata and metrics:
+\begin{DocCode}
+Condition <row_slug>
+Model <display_name> (<agent_id>)
+Noise <noise_level>
+Task type <task_type>
+Environment <paper_environment>
+Seed 0
+Run ID <agentic_run_id>
+Test top-1 <value>
+Held-out top-1 <value or ->
+Cost / tokens / steps <cost> / <prompt> + <completion> / <steps>
+Plot generated: Step 21, \dots
+Plot inspected: Step 23
+Submission: Steps 32, 34, \dots
+...
+\end{DocCode}
+Here, \code{...} represents the remaining summary rows.
+These rows include fields from the \code{metrics} object in \code{trajectory_evaluation.json} and use the definitions in \hyperref[sec:trajectory-metrics]{Trajectory metrics}.
+The \textbf{Plot generated}, \textbf{Plot inspected}, and \textbf{Submission} rows list, respectively, the steps at which a plot was generated and saved as an artifact, a plot was supplied as input to an image-capable tool, or the submission was created or edited.
+Each listed step is a hyperlink to the corresponding location in the transcript.
+
+\subsubsection*{Message structure}
+The transcript records each conversation message and tool interaction in chronological order.
+Only the first user message is truncated when it exceeds 720 characters; all subsequent entries are reproduced in full.
+Each entry begins with:
+\begin{DocCode}
+Step N: XXX
+\end{DocCode}
+Here, \(N\) is the step number, and \texttt{XXX} identifies the source as \texttt{User}, \texttt{Agent}, or \texttt{System}.
+One \texttt{AGENT} entry represents one complete provider assistant message or model response and may contain multiple reasoning, text, tool-call, and tool-observation blocks.
+\begin{DocCode}
+\par\nobreak\vspace{0.05em}%
+{\scriptsize\setlength{\parskip}{0pt}%
+  \noindent
+  Prompt tokens: #1;\enspace\allowbreak{}
+  Total output tokens: #2;\enspace\allowbreak{}
+  Non-reasoning output tokens: #3 / #4;\enspace\allowbreak{}
+  Reasoning output tokens: #5 / #6;\enspace\allowbreak{}
+  New context tokens: #7;\enspace\allowbreak{}
+  Tool-call tokens: #12 / #13;\enspace\allowbreak{}
+  Console tokens: #14 / #15;\enspace\allowbreak{}
+  Numeric tokens: #16 / #17 / #18;\enspace\allowbreak{}
+  Python statements: #19;\enspace\allowbreak{}
+  Agent response time: #20;\enspace\allowbreak{}
+  Tool wall-clock time: #21;\enspace\allowbreak{}
+  End-to-end time: #22;\enspace\allowbreak{}
+  \par}%
+\vspace{0.2em}%
+\end{DocCode}
+where:
+\begin{itemize}
+  \item \textbf{Prompt tokens} is the provider-counted number of tokens used as input for the current \texttt{AGENT} step.
+
+  \item \textbf{Total output tokens} (value \#2) is the provider-reported number of tokens generated by the LLM at the current \texttt{AGENT} step.
+  It includes reasoning and generated tool calls where applicable and is independent of the reconstructed-context measurements below.
+  The provider-specific normalization is:
+  \begin{itemize}
+    \item for GPT/Codex, \code{output_tokens}; \code{reasoning_output_tokens} is already included and must not be added again;
+    \item for Gemini, \code{output + thoughts + tool call};
+    \item for MiniMax/OpenCode, \code{output + reasoning};
+    \item for Claude, \code{output_tokens}.
+  \end{itemize}
+  It does not include tool observations.
+
+  \item \textbf{Non-reasoning output tokens} are the total output tokens excluding the provider-reported reasoning or thought tokens.
+  Value \#3 is the count, and value \#4 is its share of \textbf{Total output tokens} (value \#2).
+
+  \item \textbf{Reasoning output tokens} are the reasoning or thought tokens reported separately by the provider.
+  Value \#5 is the count, and value \#6 is its share of \textbf{Total output tokens} (value \#2).
+  When the provider does not report a separate reasoning count, both output-split values and percentages are rendered as \code{-}, while \textbf{Total output tokens} remains available.
+  The same rendering is used when an internally inconsistent provider split is rejected under \TexLink{docs-TraceBench/atif_transcription.tex}{metric:atif-completion-token-accounting}{the ATIF completion-token accounting rule}.
+  This applies to the current Claude trajectories.
+  When the split is available, the two output counts equal \textbf{Total output tokens}, and their shares sum to 100\% before display rounding.
+
+  \item \textbf{New context tokens} (value \#7) is the increase in reconstructed prompt size caused by the current \texttt{AGENT} step, including its response, tool calls, tool outputs, and any recorded reasoning retained for the next step.
+  The exact reconstruction and counting procedure is described in \hyperref[sec:materialized-agent-step-measurements]{\textbf{Per-step token calculation details}} below.
+
+  \item \textbf{Tool-call tokens} cover the tool names and arguments in the current \texttt{AGENT} step.
+  Value \#12 is their provider-counted marginal contribution to the reconstructed context, and value \#13 is its share of \textbf{New context tokens} (value \#7).
+  The reconstructed response, recorded-reasoning, tool-call, and console marginal contributions sum to \textbf{New context tokens} and to 100\% before display rounding.
+
+  \item \textbf{Console tokens} cover all textual tool observations in the current \texttt{AGENT} step.
+  Value \#14 is their provider-counted marginal contribution to the reconstructed context, and value \#15 is its share of \textbf{New context tokens} (value \#7).
+
+  \item \textbf{Numeric tokens} reports three values.
+  Value \#16 is the \hyperref[metric:overall-numbers-printed]{\textbf{Overall numbers printed}} count for the current \texttt{AGENT} step.
+  Value \#17 is the provider-counted marginal token contribution of those numeric literals, and value \#18 is that contribution as a percentage of \textbf{New context tokens} (value \#7).
+  Numeric tokens overlap with \textbf{Console tokens}; they are not a separate partition category.
+
+  \item \textbf{Python statements} (value \#19) reports the number of Python abstract-syntax-tree statement nodes in new Python source first displayed during the current \texttt{AGENT} step.
+  Statements are counted statically, whether or not the code executes.
+  Unchanged source displayed again is not counted again.
+  Value \#19 is rendered as \code{-} when no new Python source is displayed or when that source cannot be recovered or parsed.
+
+  \item \textbf{Agent response time} (value \#20) is the current logical response step's recorded ATIF \code{duration}.
+  It measures the wall-clock interval from the request-ready time to emission of the response's final block.
+  It may include inference, streaming, transport, and runtime overhead and therefore must not be interpreted as pure internal model-reasoning time.
+
+  \item \textbf{Tool wall-clock time} (value \#21) measures how long at least one tool associated with the current response is running.
+  Let \(S_{ij}\) and \(E_{ij}\) be the matched tool-call and observation timestamps for tool call \(j\) in response \(i\).
+  The value is
+  \[
+    W_i =
+    \mu\!\left(\bigcup_j [S_{ij}, E_{ij}]\right),
+  \]
+  where \(\mu\) denotes elapsed wall-clock duration.
+  Overlapping tool calls therefore contribute only once.
+  The value is zero when the response has no tool calls and is rendered as \code{-} when a required start or completion timestamp is unavailable.
+
+  \item \textbf{End-to-end time} (value \#22) measures the wall-clock interval from request readiness until the complete response and all of its tool calls have finished.
+  Let \(Q_i\) be the request-ready time, \(R_i\) the response's final-block timestamp, and \(E_{ij}\) the tool-observation timestamps.
+  The value is
+  \[
+    L_i = \max\!\left(R_i, \max_j E_{ij}\right) - Q_i.
+  \]
+  With no tool calls, \(L_i\) equals the agent response time.
+  Agent response time and tool wall-clock time may overlap, so values \#20 and \#21 do not necessarily sum to value \#22.
+  A timing value is rendered as \code{-} when any timestamp required for that value is unavailable.
+  All three timing values are reported in seconds to three decimal places.
+\end{itemize}
+
+\subsubsection*{Python rendering}
+Recoverable Python source is displayed in syntax-highlighted blocks.
+The gutter identifies Python statements rather than physical lines, and unchanged source is numbered only once.
+
+\subsubsection*{Images}
+Embedded PNG and JPEG payloads are displayed as images.
+
+
+\section*{Appendix: Trajectory evaluation schema}
+\phantomsection\label{sec:trajectory-evaluation-schema-appendix}
+
+The run-level \code{trajectory_evaluation.json} has this top-level structure:
+\begin{DocCode}
+{
+  "agentic_run_id": "<run_id>",
+  "agent_id": "<agent_profile_id>",
+  "atif_trajectory_path": "/abs/path/to/atif_trajectory.json",
+  "tokens": {
+    "total_prompt_tokens": 1200,
+    "total_completion_tokens": 250,
+    "avg_prompt_tokens_per_iteration": 80.0,
+    "avg_completion_tokens_per_iteration": 16.67
+  },
+  "agent_step_metrics": {
+    "schema_version": 2,
+    "source_atif_sha256": "sha256:...",
+    "provider_token_counting": {
+      "status": "complete",
+      "scope": "atif_reconstructed_context",
+      "provider": "anthropic",
+      "model": "claude-...",
+      "endpoint": "/v1/messages/count_tokens",
+      "reconstruction_version": "1",
+      "request_serializer_version": "1",
+      "computed_at": "2026-07-20T12:00:00Z"
+    },
+    "python_statement_counting": {
+      "scope": "distinct_python_source_versions_first_displayed",
+      "parser": "python_ast",
+      "version": "1"
+    },
+    "steps": [
+      {
+        "step_id": 2,
+        "agent_iteration": 1,
+        "reconstruction_fingerprint": "sha256:...",
+        "token_count_status": "complete",
+        "cumulative_input_tokens": 12540,
+        "new_context_tokens": 431,
+        "response_tokens": 40,
+        "recorded_reasoning_tokens": 18,
+        "tool_call_tokens": 72,
+        "console_tokens": 301,
+        "numeric_literal_count": 12,
+        "numeric_tokens": 19,
+        "python_statement_count": 4,
+        "unavailable_reason": null
+      }
+    ]
+  },
+  "artifact_analysis": {
+    "python_scripts": {"created": 2, "executed": 1},
+    "json_files": {"created": 1},
+    "plots": {"generated": 4, "inspected": 3}
+  },
+  "cost_usd": 0.123,
+  "total_time_seconds": 542.75,
+  "elapsed_time_seconds": 542.75,
+  "session_limit_wait_seconds": 0.0,
+  "total_time_method": "continuous_elapsed",
+  "number_of_interactions": { ... },
+  "metrics": {
+    "overall_numbers_printed": 434234,
+    "python_calls": 13,
+    "python_statements": 57,
+    "python_call_unknown_sources": 0,
+    "solution_iteration": 23,
+    "decision_taken": "Model inspected features directly",
+    "context_compaction_count": 1,
+    "context_compaction_iterations": [9]
+  }
+}
+\end{DocCode}
+
+\phantomsection\label{sec:materialized-agent-step-measurements}
+\subsection*{Per-step token calculation details}
+
+\code{agent_step_metrics} stores the per-step measurements used by the trajectory PDF.
+These measurements are derived from the canonical ATIF trajectory; they are not historical usage values reported during the original model invocation.
+
+The existing \code{steps[i].metrics.prompt_tokens}, \code{completion_tokens}, \code{non_reasoning_completion_tokens}, \code{reasoning_completion_tokens}, and \code{cached_tokens} fields in \code{atif_trajectory.json} remain the historical provider-reported usage measurements.
+They must not be overwritten with reconstructed-context measurements.
+
+The \code{provider_token_counting} object records the provenance needed to reproduce and validate the reconstructed counts: the source ATIF hash, provider, model, counting endpoint, context-reconstruction version, request-serializer version, and computation time.
+API credentials are never stored.
+
+A stored result is reusable only when the source ATIF hash, provider, model, counting endpoint, reconstruction version, and request-serializer version match the current evaluation.
+Otherwise, it is stale and must be recomputed or rendered as unavailable.
+
+The reconstructed context contains only information recoverable from the recorded ATIF; it is not a reconstruction of an unrecorded original request.
+It begins with the first recorded ATIF step and therefore excludes any hidden persistent harness prefix, system or developer instructions, harness-injected messages, tool definitions, and request framing that precede that step.
+The versioned text-only reconstruction maps recorded \texttt{USER} and \texttt{SYSTEM} steps to labeled user messages, maps an \texttt{AGENT} step's message, reasoning, tool names, and tool arguments to an assistant message, and maps its textual tool observations to a following user message.
+Image and base64 payload bytes are replaced by an explicit placeholder.
+Consequently, these values are exact provider counts for the declared reconstruction, not tokenizer estimates and not the historical full-request usage counts.
+
+At a recorded context compaction, the retained prefix is reset to the recorded summary immediately before the associated \texttt{AGENT} iteration.
+If that summary is absent, measurements are unavailable from that iteration until a later valid recorded summary establishes a reconstructible prefix.
+
+Token categories are measured as ordered marginal contributions.
+Starting with the reconstructed prompt immediately before the current \texttt{AGENT} step, the provider recounts the prompt after adding, in order, the response, recorded reasoning, tool calls, and tool outputs.
+The increase at each stage is assigned respectively to \textbf{Response-context tokens}, \textbf{Recorded-reasoning context tokens}, \textbf{Tool-call tokens}, or \textbf{Console tokens}.
+These reconstructed-context contributions are separate from the historical \textbf{Total output tokens}, \textbf{Non-reasoning output tokens}, and \textbf{Reasoning output tokens} reported for the original model invocation.
+All content is counted after provider request serialization.
+The numeric overlay is the difference between the full serialized context and the same context with meaningful observation numerics redacted under the \hyperref[metric:overall-numbers-printed]{\textbf{Overall numbers printed} rules}.
+Identical provider requests are reused through a persistent content-addressed cache; credentials and request payloads are not stored in \code{trajectory_evaluation.json}.
+
+For each \texttt{AGENT} step, integer token counts are stored directly.
+Percentages are not stored; the renderer derives them from \code{new_context_tokens}.
+The response-context, recorded-reasoning context, tool-call, and console token counts must sum to \code{new_context_tokens}.
+\code{numeric_tokens} is an overlay on \code{console_tokens} and is not part of this partition.
+\code{python_statement_count} is computed locally and does not require a provider API call.
+
+PDF regeneration reuses valid measurements already materialized in \code{trajectory_evaluation.json} and therefore performs no provider API calls.
+Provider token counting occurs only through an explicit evaluation or refresh operation.
+
+\subsection*{Interaction counts}
+\phantomsection\label{sec:trajectory-evaluation-number-of-interactions}
+
+\code{number_of_interactions} has the following fixed structure:
+\begin{DocCode}
+{
+  "number_of_interactions": {
+    "user": 1,
+    "system": 0,
+    "agent": {
+      "tool_call_steps": 51,
+      "tool_observation_steps": 51,
+      "steps": 20
+    }
+  }
+}
+\end{DocCode}
+
+\subsection*{Artifact analysis}
+
+\code{artifact_analysis} summarizes Python scripts that were created or executed, JSON files that were created, and plot artifacts that were generated or inspected:
+\begin{DocCode}
+{
+  "artifact_analysis": {
+    "python_scripts": {"created": 2, "executed": 1},
+    "json_files": {"created": 1},
+    "plots": {"generated": 4, "inspected": 3}
+  }
+}
+\end{DocCode}
+The plot counts follow the authoritative definitions of \textbf{Plots generated} and \textbf{Plots inspected} above.
+
+\end{document}

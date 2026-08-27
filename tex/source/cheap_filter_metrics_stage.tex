@@ -1,0 +1,219 @@
+\documentclass[11pt]{article}
+\usepackage{manual_docs_style}
+\externaldocument{build/environment_profiles}[environment_profiles.pdf]
+\externaldocument{build/candidate_generation}[candidate_generation.pdf]
+\externaldocument{build/simulation_stage}[simulation_stage.pdf]
+\externaldocument{overleaf_paper/build/main}[overleaf_paper/archive/compiled/main.pdf]
+
+\begin{document}
+
+\docTitle{Stage: Cheap Filter Metrics}
+\phantomsection\label{docstart:cheap_filter_metrics_stage}
+
+\subsection*{Overview}
+This stage computes low-cost detectability filters for materialized intervention runs.
+For each intervention, it compares the trajectory against the matched \hyperref[sec:candidate-generation-baseline-recipe]{baseline} and the matched \hyperref[sec:candidate-generation-time0-baseline-recipe]{time0 baseline}.
+The generic metric is a per-signal RMS difference, normalized over the valid aligned samples for that signal.
+The stage can also call a \termSimulator-specific cheap detectability hook to reject cases that are known to be indiguishable between classes.
+
+Thresholds are channel-specific.
+They determine whether valid trajectories are distinguishable at or after the intervention.
+Pre-intervention divergence is not a detectability-threshold concern: Stage Simulate first requires each intervention to match its family baseline within absolute tolerance \code{1e-3} at timestamps strictly before the intervention.
+A mismatch there is recorded as a simulation-stage integrity failure, so the cheap-filter stage must not conceal or reinterpret it as detectability.
+\agentProposedEdit{tracebench-docs-solvability-section-reference}{The hyperlink target should use the renamed label for the Solvability filtering subsection.}{Additional information can be found in the paper section on \hyperref[sec:detectability]{detectability and distinguishability}.}{Additional information can be found in the paper section on \hyperref[sec:solvability-filtering]{detectability and distinguishability}.}
+
+\section*{Invocation}
+
+The script is \code{workflows/metrics/compute_metrics.py}.
+
+\begin{DocCode}
+python workflows/metrics/compute_metrics.py \
+  --model_dir SIMULATOR_DIRECTORY \
+  --policy POLICY_ID \
+  --root_dir ROOT_DIR \
+  [--uuid UUID] \
+  [--thresholds THR1 ...] \
+  [--thresholds-file THRESHOLDS_JSON] \
+  [--filter-profile legacy|strict_clean_v1] \
+\end{DocCode}
+
+Here \code{ROOT_DIR} is the run-artifact root produced by \hyperref[docstart:simulation_stage]{Stage: Simulate}.
+It is the directory containing \code{model_record.json} and the per-run artifact directories.
+During execution, the script displays a progress bar over the intervention runs in the selected policy.
+\code{--thresholds} and \code{--thresholds-file} are mutually exclusive.
+The threshold file may be either a direct signal-to-value JSON object or a provenance object containing a non-empty \code{thresholds} object.
+The default profile is \code{legacy}.
+
+\section*{Inputs}
+
+For each \termSimulator, the stage reads:
+
+\begin{itemize}
+\item \code{plans/<policy_id>/}\hyperref[sec:candidate-generation-run-nodes]{\code{run_nodes.jsonl}} and \code{plans/<policy_id>/}\hyperref[sec:candidate-generation-run-edges]{\code{run_edges.jsonl}}.
+\item  \code{<model_dir>/}:
+\begin{DocCode}
+<model_dir>/
+    experiment_config.json
+    plans/<policy_id>/run_nodes.jsonl
+    plans/<policy_id>/run_edges.jsonl
+    detectability_specific_environment.py # optional
+    noise_adder.py
+\end{DocCode}
+\item \code{<run_root>/}, the run-artifact root:
+\begin{DocCode}
+<run_root>/
+  model_record.json
+  <run_id>/
+    recipe.json
+    data.parquet
+    simulink_model.mdl
+    features.json        # optional
+    debug/               # optional
+  <another_run_id>/
+    ...
+\end{DocCode}
+\item \code{experiment_config.json}: used to read default thresholds when thresholds are not passed explicitly.
+\item \code{detectability_specific_environment.py}: optional \termSimulator-specific detectability hook.
+\end{itemize}
+
+By default, \code{<run_root>} is:
+
+\begin{DocCode}
+models/simulink/<simulator_id>/runs/
+\end{DocCode}
+
+When Stage: Simulate is run with \code{--runs-root RUNS_ROOT}, \code{<run_root>} is:
+
+\begin{DocCode}
+<RUNS_ROOT>/<simulator_id>/runs/
+\end{DocCode}
+
+\section*{Outputs}
+
+Each cheap-filter execution writes one metric-run directory:
+
+\begin{DocCode}
+<model_dir>/metrics/<policy_id>/<metric_run_id>/
+  metric_run.json
+  cheap_filter_metrics.jsonl
+\end{DocCode}
+
+\code{<model_dir>} is the path to a folder such \code{models/simulink/BallDrop}.
+\code{metric_run_id} identifies the exact cheap-filter configuration that produced the metrics.
+Downstream stages should consume the metric-run directory, not infer configuration from a UUID embedded in a filename.
+
+\section*{Schema}
+
+\code{metric_run.json} records the identity and configuration for one cheap-filter execution:
+
+\begin{DocCode}
+{
+  "record_type": "metric_run",
+  "metric_run_id": "cheap_filter_8f4c9d2e",
+  "metric_type": "cheap_filter",
+  "created_at": "2026-06-23T12:00:00Z",
+  "script": "workflows/metrics/compute_metrics.py",
+  "model": "BallDrop",
+  "policy_id": "production_v1",
+  "model_dir": "models/simulink/BallDrop",
+  "run_root": "models/simulink/BallDrop/runs",
+  "inputs": {
+    "run_nodes": "plans/production_v1/run_nodes.jsonl",
+    "run_edges": "plans/production_v1/run_edges.jsonl",
+    "model_record": "runs/model_record.json"
+  },
+  "thresholds": {
+    "height": 0.02,
+    "velocity": 0.05
+  },
+  "detectability_specific_environment": "detectability_specific_environment.py"
+}
+\end{DocCode}
+
+\code{cheap_filter_metrics.jsonl} is JSON Lines.
+Each intervention writes one run record:
+
+\begin{DocCode}
+{
+  "record_type": "run",
+  "metric_run_id": "cheap_filter_8f4c9d2e",
+  "policy_id": "production_v1",
+  "family_id": "fam_...",
+  "run_id": "run_intervention_...",
+  "kind": "intervention",
+  "ground_truth_label": "gravity",
+  "baseline_run_id": "run_baseline_...",
+  "time0_run_id": "run_time0_...",
+  "changed_parameter": "gravity",
+  "filter_profile": "strict_clean_v1",
+  "filter_pass": true,
+  "cheap_filter_pass": true,
+  "strict_clean_pass": true,
+  "linked_run_status": {
+    "baseline": "success",
+    "intervention": "success",
+    "time0_baseline": "success"
+  },
+  "baseline_rms_difference": {
+    "height": 0.013,
+    "velocity": 0.041
+  },
+  "time0_rms_difference": {
+    "height": 0.020,
+    "velocity": 0.058
+  },
+  "detectability": {
+    "environment_specific_detectability": true,
+    "vs_baseline": {
+      "generic_numeric_detectability": true,
+      "detectability_output": {
+        "first_diff": [1.23],
+        "mean_SNR": [31.4]
+      }
+    },
+    "vs_time0_baseline": {
+      "generic_numeric_detectability": true,
+      "detectability_output": {
+        "first_diff": [1.20],
+        "mean_SNR": [29.8]
+      }
+    }
+  },
+  "failure_reasons": []
+}
+\end{DocCode}
+
+
+\section*{Enviroment specific Detectability}
+This uses the \termSimulator-specific function \code{is_detectable} as defined here:
+
+\section*{Pass Rules}
+
+\code{filter_pass} is the result selected by \code{filter_profile}.
+Both profile-specific booleans are always written, so changing the selected profile does not erase the legacy result.
+
+An intervention has \code{cheap_filter_pass = true} only if:
+
+\begin{itemize}
+\item it has status \code{success} in \code{model_record.json};
+\item it is numerically valid and has all required observable signals;
+\item \code{generic_numeric_detectability} is true for both \code{vs_baseline} and \code{vs_time0_baseline}.
+\end{itemize}
+Note for generating valid deep learning samples we only care about \code{generic_numeric_detectability} is true for both \code{vs_baseline} and \code{vs_time0_baseline}.
+
+An intervention has \code{strict_clean_pass = true} only if all three linked runs have status \code{success}; all three trajectories are present and numerically valid; generic numeric detectability passes against both the family baseline and time-zero baseline; the simulator-specific hook passes against the family baseline; and each comparison reports a finite first-difference time at or after the declared intervention time.
+
+Strict-clean thresholds can be calibrated with \code{workflows/metrics/calibrate_strict_clean_thresholds.py}.
+The campaign calibration applies the simulator's \code{high} noise profile with seeds 0--4 to successful pilot trajectories, computes each signal's full-trajectory L2 distance from its clean trajectory, and writes \code{1.10} times the empirical 99th percentile together with input hashes and sample counts.
+
+\section*{Validation Rules}
+
+\begin{itemize}
+\item Every metric record must refer to a \code{run_id} present in \code{run_nodes.jsonl}.
+\item Every intervention metric must have a matched baseline and time-zero/static-change run from \code{run_edges.jsonl}.
+\item Only successful materialized runs may have \code{cheap_filter_pass = true}.
+\item The cheap-filter stage must not change run recipes or recipe hashes.
+\item Re-running this stage with the same \code{metric_run_id} may overwrite the existing metric-run directory.
+\end{itemize}
+
+\end{document}

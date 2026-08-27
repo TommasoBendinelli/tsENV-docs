@@ -1,0 +1,512 @@
+\documentclass[11pt]{article}
+\usepackage{manual_docs_style}
+\usepackage{booktabs}
+\externaldocument{build/environment_profiles}[environment_profiles.pdf]
+\externaldocument{build/candidate_generation}[candidate_generation.pdf]
+
+% Source-review destinations used by the docs comment synchronizer.
+\DeclareRobustCommand{\ReviewAnchor}[2]{%
+  \ifcsname hypertarget\endcsname
+    \hypertarget{review-anchor:\detokenize{#1}}{}%
+  \else
+    \pdfdest name {review-anchor:#1} xyz%
+  \fi
+}
+% Keep review anchors out of PDF bookmark strings.
+\ifcsname pdfstringdefDisableCommands\endcsname
+  \pdfstringdefDisableCommands{%
+    \def\ReviewAnchor#1#2{}%
+  }
+\fi
+\begin{document}
+
+\docTitle{Stage: Simulate}
+\phantomsection\label{docstart:simulation_stage}
+This stage materializes resolved Simulink run recipes into time-series artifacts using the Simulink/Simscape engine.
+To train the deep learning networks, we generate on the order of 100k data samples per \termSimulator.
+As a result, the complete data-generation process can take several days and produce tens of gigabytes of artifacts.
+To help diagnose memory leaks, hangs, and performance bottlenecks, this stage supports advanced profiling.
+To make large runs faster and more robust, the stage supports MATLAB parallel execution, partial regeneration of only missing, failed, or stale runs, explicit output roots for final artifacts, and reusable prepared MATLAB workspaces.
+In addition, the section's appendix provides a logbook of encountered issues and how they were resolved.
+
+\paragraph{Internal mechansim}
+The stage is exposed as a single script that internally performs two separate tasks.
+First, it reconciles the resolved plan with the runtime inventory in \code{model_record.json}, so that it simulates only runs that are pending, failed, or stale (\hyperref[sec:simulate-stale-run-definition]{as defined here}).
+Second, it executes the simulations.
+By default, the final artifacts are written under \code{models/simulink/<simulator_id>/runs/<run_id>/}, or under the base directory specified with \code{–runs-root}.
+For large batches, \code{--runs-root} can be used to place the final run directories on storage better suited to handling large numbers of artifact folders, rather than on a shared or slow filesystem.
+
+\section*{Invocation}
+The script is \code{workflows/simulate/run_pending_sims.py}.
+
+\begingroup
+\fvset{commandchars=|\(\)}
+\begin{DocCode}
+SIMSCAPE_CUSTOM_PATH=... \
+TMPDIR=... \
+TRACEBENCH_MATLAB_PARPOOL_CHUNK_SIZE=... \
+TRACEBENCH_MATLAB_FUTURE_TIMEOUT_S=... \
+|agentProposedEdit(tracebench-matlab-memory-log-env)(The memory-log variable should use the same MATLAB namespace as the remaining runtime controls.)(TRACEBENCH_MEMORY_LOG_PATH=... \)(TRACEBENCH_MATLAB_MEMORY_LOG_PATH=... \)
+|agentProposedEdit(tracebench-matlab-recycle-floor-invocation)(The old RSS-only variable does not match the implemented cadence-and-available-memory contract.)(TRACEBENCH_MATLAB_ENGINE_RESTART_RSS_GB=... \)(TRACEBENCH_MATLAB_ENGINE_RECYCLE_CHUNKS=... \
+TRACEBENCH_MATLAB_MIN_AVAILABLE_GB=... \)
+python workflows/simulate/run_pending_sims.py \
+  [--model SIMULATOR] \
+  --policy POLICY_ID \
+  [--matlab-workers N] \
+|agentProposedEdit(agent-remove-8eb72aae-668b-50fa-97ac-f2e6f1afd4c8)(removed automatic family reuse option)(  [--reuse-family-baselines] \)()
+  [--overwrite] \
+  [--rerun-failed] \
+  [--raise-on-errors] \
+  [--debug] \
+  [--run-id RUN_ID] \
+  [--runs-root RUNS_ROOT] \
+  [--matlab-cache-root MATLAB_CACHE_ROOT] \
+  [--prepared-workspace-root PREPARED_WORKSPACE_ROOT] \
+  [--keep-prepared-workspace] \
+  [--profile-timing] \
+\end{DocCode}
+\endgroup
+
+The command-line arguments and environment variables are explained in \hyperref[sec:simulate-cli-options]{the appendix}.
+
+\section*{Inputs}
+
+For each \termSimulator under \code{models/simulink/<simulator_id>/}, the script requires:
+\begin{center}
+\begin{tabular}{@{}p{0.38\linewidth}p{0.54\linewidth}@{}}
+\toprule
+Required file & Purpose \\
+\midrule
+\code{plans/<policy_id>/run_nodes.jsonl} and \code{plans/<policy_id>/run_edges.jsonl} & Resolved run nodes/edges and run recipes. \\
+\code{simulink_model_original.mdl} & Source Simulink model copied for each run. \\
+\code{generated/metadata.json} & Extracted simulator metadata. \\
+\code{experiment_config.json} & Experiment-level configuration. \\
+\hyperref[sec:simulation-model-record-schema]{\code{runs/model_record.json}} & Entry represents a materialized run node; see schema. \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+
+\section*{Output}
+Materialized artifacts are stored under:
+\begin{DocCode}
+<RUNS_ROOT>/<simulator_id>/runs/<run_id>/
+\end{DocCode}
+
+by default \code{<RUNS_ROOT>} is \code{models/simulink/} when \code{--runs-root} is not provided
+\begin{DocCode}
+models/simulink/<simulator_id>/runs/<run_id>/
+\end{DocCode}
+
+
+
+
+
+Each successful run directory contains:
+
+\begin{itemize}
+\item \code{recipe.json}: the exact canonical recipe copied from \code{run_nodes.jsonl}.
+\item \code{data.parquet}: the materialized time series.
+\item \code{simulink_model_<run_id>.mdl}: the exact uniquely named Simulink model used to generate this run.
+\end{itemize}
+\agentProposedEdit
+  {agent-add-3d9dc9ac-a0f4-52af-9681-eeec3de4a3cc}
+  {Add this agent-authored block for review.}
+  {}
+  {For each successful new run, \code{model_record.json} records the corresponding \code{simulink_model_name} and \code{simulink_model_file} values.}
+
+If \code{--debug} is passed, each successful run directory also contains:
+
+\begin{itemize}
+\item \code{debug/input_signals.mat}: MATLAB payload storing \code{TimeVaryingParameters}.
+\item \code{debug/tracebench_worker_heartbeat.jsonl}: stage transitions recorded by the MATLAB worker.
+\item \code{debug/tracebench_worker_stage.txt}: latest recorded MATLAB worker stage.
+\end{itemize}
+
+\code{model_record.json} is rewritten under the run root and serves as the runtime inventory of completed, pending, or failed run IDs.
+By default, validation or simulation errors record a failed run and the batch continues; \code{--raise-on-errors} instead stops the batch.
+The pre-intervention integrity check persists its failed status and diagnostic before raising.
+When a pre-intervention comparison fails, the affected intervention entry also records
+\code{simulation_stage_pre_intervention_validation} with the matched baseline ID, tolerance, compared sample count,
+maximum absolute difference overall and per signal, and the first mismatching timestamp.
+
+
+\section*{Internal Steps}
+\phantomsection\label{sec:simulate-stale-run-definition}
+It reads a resolved run graph from \code{plans/<policy_id>/run_nodes.jsonl} and \code{plans/<policy_id>/run_edges.jsonl}, validates the extracted \termSimulator metadata, reconciles the requested run nodes with \code{model_record.json}, and launches MATLAB only for runs that are pending, failed, or stale.
+A run is stale when it is marked \code{success}, but its artifact is missing or its stored recipe/parameter hash no longer matches the selected resolved plan.
+The script can run multiple runs in parallel for one \termSimulator by starting a MATLAB \code{parpool}; separate \termSimulators may be launched as separate jobs.
+
+The code validates inputs, reconciles \code{model_record.json}, and then materializes selected runs.
+The following applies to all run kinds: baseline, intervention, and time-zero/static-change runs.
+Every run is tracked independently in \code{model_record.json}. 
+\agentProposedEdit{agent-remove-bf9e95fc-011e-54d4-857b-176c0f1924e5}{automatic family reuse replaced the opt-in mode}{By default every run is also simulated independently; the opt-in \code{--reuse-family-baselines} mode described below combines a pending family baseline and its pending interventions inside one MATLAB future while still returning and persisting one result per run.}{}
+\agentProposedEdit
+  {agent-add-a5bd9c83-be52-51a5-9790-54996359b86f}
+  {Add this agent-authored block for review.}
+  {}
+  {For multi-worker execution, the runner automatically combines each eligible pending family baseline and its pending interventions inside one MATLAB future while still returning and persisting one result per run.
+With one MATLAB worker, targeted execution, an existing baseline artifact, an incompatible family, or a family-mode failure, runs use the individual simulation path.
+Automatic family-baseline reuse also requires \code{experiment_config.json::allow_family_baseline_reuse} to be \code{true}, which is the backward-compatible default when the field is omitted.}
+
+\subsection*{Validation Between \code{metadata.json}, \code{experiment_config.json}, and \code{description_levels.json}}
+
+The stage validates the checks described in \hyperref[sec:environment-validation-rules]{the environment validation rules}.
+
+\subsection*{Reconciliation Flow}
+
+The script reconciles \code{run_nodes.jsonl} with \code{runs/model_record.json} as follows:
+
+\begin{enumerate}
+\item Load \code{models/simulink/<simulator_id>/plans/<policy_id>/run_nodes.jsonl} the resolved run nodes.
+\item Validate that every requested \code{run_id} has a unique \code{recipe_hash}, a valid \code{kind}, and a recipe that satisfies the hard constraints in \code{experiment_config.json}.
+\item For every run node in the selected plan, ensure that \code{model_record.json} contains a corresponding entry. Missing entries are created with status \code{not_run}.
+\item If \code{--overwrite} is passed, mark every selected run as \code{not_run}.
+\item If \code{--rerun-failed} is passed, mark only failed selected runs as \code{not_run}.
+\item If \code{--run-id} is passed, restrict all later reconciliation and materialization to that single run.
+\item If a run is currently marked as \code{success}, downgrade it to \code{not_run} if \code{runs/<run_id>/data.parquet} does not exist or if \code{model_record.json::<run_id>.recipe_hash} does not match \code{run_nodes.jsonl::<run_id>.recipe_hash}.
+\item If a run is set to \code{not_run}, delete \code{runs/<run_id>/} before re-materialization.
+\item By default, do not delete run folders that are outside the selected plan. 
+Since run IDs are content-addressed, the same run may be reused by multiple policies.
+Pruning unknown folders is allowed only under an explicit cleanup flag.
+\end{enumerate}
+
+If no selected run remains in \code{not_run}, the stage rewrites \code{model_record.json} and exits without launching MATLAB.
+
+\subsection*{Simulation Flow}
+Runs are executed in dependency-ordered batch phases.
+For multi-worker execution, the first phase automatically submits each pending baseline together with its eligible pending interventions from the same family.
+After that phase, the runner executes any remaining pending interventions whose baselines succeeded, validates intervention integrity and detectability, and finally executes the corresponding time-zero baselines.
+Families that cannot satisfy the automatic reuse preconditions use the ordinary individual path.
+If a family baseline fails, the family's pending intervention and time-zero baseline runs are skipped because the intervention comparisons are not meaningful without a valid baseline.
+Second, for families whose baseline succeeded, it materializes any pending interventions that were not included in the combined
+family batch. In particular, an intervention whose baseline artifact already existed is always simulated individually: the runner
+does not recompute a second baseline and pretend that it produced the existing artifact.
+
+\paragraph{Intervention generation}
+After the intervention batch completes, each successful intervention is first checked against its family baseline at every timestamp strictly before the intervention time.
+The time grid and observable columns must match, at least one pre-intervention sample must exist, and every absolute signal difference must be at most \code{1e-3}.
+A larger or structural mismatch indicates corrupt simulation output: the runner emits a warning, removes the affected intervention artifacts, records a structured diagnostic in \code{model_record.json}, marks the intervention and its pending time-zero baseline as \code{failed}, and continues with other runs.
+With \code{--raise-on-errors}, it persists those failure records and then stops the batch.
+Only interventions that pass this integrity check are compared against their family baseline using the configured generic numeric detectability check.
+If the intervention is not distinguishable from the baseline, the intervention is marked \code{not_detectable} and the corresponding time-zero baseline run is also marked \code{not_detectable} and skipped.
+Finally, only for interventions that remain successful after this detectability gate, the runner materializes the corresponding time-zero baseline runs.
+These time-zero baseline artifacts can then be used by later quick checks to compare the intervention against both the original family baseline and the time-zero baseline.
+
+\begin{enumerate}
+\item Run the Simulink/Simscape model and collect raw observable signals.
+Simulink loads \code{simulink_model_<run_id>.mdl}, which embeds the run-specific baseline workspace values, and uses \code{sim_the_model.m} to execute the simulation.
+\agentProposedEdit{agent-remove-29dc16b6-a0ed-5e6d-a653-f1ab3dc2ed60}{inconsistent with current TVP initialization}{The \code{time_varying_parameters.mat} payload contains only parameters that actually change during the run.}{}
+\agentProposedEdit{agent-remove-f1fc3abe-179f-5c14-a47b-25def4d74227}{inconsistent with current TVP initialization}{It's only used in case of interventions.}{}
+\agentProposedEdit
+  {agent-add-ae331561-ab92-577d-8f28-b25ecd6f48f3}
+  {Add this agent-authored block for review.}
+  {}
+  {The \code{time_varying_parameters.mat} payload is used for every prepared run and initializes every mapped block parameter at time zero.
+For an intervention, the same compact payload also records each effective parameter change.}
+For example, an intervention on \code{drag_coeff} at \code{t=2.44} from 21.67 to 25.79 is represented as:
+\begin{DocCode}
+drag_coeff: [0, 2.44] -> [21.67, 25.79]
+\end{DocCode}
+
+
+\item Extract and normalize the raw signals returned by MATLAB.
+The runner keeps only configured observable signals and converts Simulink and Simscape outputs into the common signal dictionary
+used by the Python finalization path.
+
+\item Resample the signal dictionary to the configured output sampling rate.
+The first timestamp is expected to be \code{dt = 1/sampling_rate_hz}; the last point must be smaller than
+\code{end_time_input_s}.
+
+\item Serialize \code{data.parquet} under \code{runs/<run_id>/} and validate the saved artifact.
+Validation checks timestamp spacing, column order, \code{float32} storage, minimum length, expected sample count, and absence of
+\code{NaN} or \code{inf} values.
+\end{enumerate}
+
+\subsection*{Parallel Execution}
+When \code{-–matlab-workers} is set to \code{1}, runs are materialized serially.
+Otherwise, the script starts a single MATLAB engine session and creates a MATLAB \code{parpool(“Processes”, N)}.
+
+\paragraph{Prepared MATLAB Workspace}
+When MATLAB parallelism is enabled, the runner first prepares an isolated MATLAB workspace for each run and then submits the runs to a MATLAB \code{parpool}.
+Each workspace contains a uniquely named \code{simulink_model_<run_id>.mdl}, together with the initial parameters, the simulation entrypoint, and the time-varying parameter payload for that run. 
+Concretely, the workspace directory contains the run-specific model file, a copy of \code{sim_the_model.m}, and \code{time_varying_parameters.mat}.
+The model file stores the run's initial model-workspace and block-parameter values, while the MAT-file contains a compact schedule for every mapped block parameter.
+Every schedule has its initial value at time zero, and an intervention adds an entry at the first solver-grid timestamp greater than or equal to its declared start time.
+For large policies, preparing these workspaces can introduce noticeable overhead and generate many small files, placing additional load on the filesystem.
+Large batches should therefore place temporary workspaces on suitable scratch storage by setting \code{TMPDIR}. 
+
+In an end-to-end preparation-only benchmark on \code{tommaso-desktop}, the runner prepared the complete 1,374-run BallDrop policy three times at 76.6--85.1 workspaces per second, with a median of 84.6 workspaces per second.
+The dominant cost is serial MATLAB serialization of one \code{time_varying_parameters.mat} file per run, which accounted for approximately 73\% of measured preparation time, while the complete Python-side \code{prepare_simulation_case} step, accounts for roughly 3--4\%.
+To avoid repeating this work after an interrupted or stalled MATLAB job, the runner can preserve and reuse previously prepared workspaces; see \hyperref[sec:simulate-cli-options]{the command-line options}.
+
+\paragraph{Cleanup across jobs}
+MATLAB pool workers are reused across jobs, so loaded TraceBench models and job-specific paths persist in worker state.
+We therefore perform a cleanup after each job to avoid accumulating resources.
+The cleanup disables Fast Restart, removes the workspace from the MATLAB path, restores the worker's original working directory, and closes any open Simulink models.
+This cleanup is performed regardless of whether the job completes successfully, fails, or is cancelled.
+As an additional security check, before starting each job, the worker also unloads any TraceBench models left loaded by a previous job.
+If a stale TraceBench model cannot be unloaded, the new job fails before simulation begins.
+
+\paragraph{Family baseline reuse}
+Family-baseline reuse is an execution optimization for related simulations.
+Example:
+\begin{DocCode}
+Baseline B: no intervention, simulated from (0) to (T)
+- Intervention I_1: changes mass at (t=2)
+- Intervention I_2: changes gravity at (t=3)
+
+With multiple MATLAB workers, TraceBench automatically:
+
+1. Simulates B once from (0) to (T).
+2. Saves the complete MATLAB/Simulink state at (t=2) and (t=3).
+3. Restarts I_1 from the saved (t=2) state and applies its intervention.
+4. Restarts I_2 from the saved (t=3) state and applies its intervention.
+5. Saves B, I_1, and I_2 as three separate run results.
+\end{DocCode}
+This avoids independently repeating the identical baseline prefixes \(0 \rightarrow 2\) and \(0 \rightarrow 3\).
+This strategy is automatically used when \code{--matlab-workers} is greater than one and the pending baseline and interventions form an eligible family.
+\agentProposedEdit
+  {agent-add-d5ce5c38-ac28-5529-b8fb-4cbe7f518c40}
+  {Add this agent-authored block for review.}
+  {}
+  {An environment should set \code{allow_family_baseline_reuse} to \code{false} whenever its parameters cannot safely change under Fast Restart or its family-mode fallback cannot produce valid observable signals.
+BounceBall sets this field to \code{false} because changing its contact damping under Fast Restart fails, and the family wrapper's individual fallback can return empty observable payloads that runtime validation rejects as zero-point trajectories.}
+
+\paragraph{Prepared Workspace Reuse}
+For large policies, workspace preparation can be expensive.
+If a job is interrupted after preparation, a later run can reuse the prepared root with \code{--prepared-workspace-root}.
+If that root already contains prepared jobs, the runner skips the preparation pass and submits the existing jobs to MATLAB.
+Use \code{--keep-prepared-workspace} when starting a new run if the prepared root should be preserved for later recovery.
+\agentProposedEdit
+  {agent-add-15043af7-2711-56a7-948f-ffcdbc558b23}
+  {Add this agent-authored block for review.}
+  {}
+  {Prepared roots created under the earlier fixed-name model contract are rejected and must be rebuilt.}
+Prepared jobs are stored below phase subdirectories. Family reuse uses the \code{families/} phase; ordinary resumed interventions
+use \code{interventions/}, and time-zero runs use their own phase. A prepared root created before family reuse that contains only
+\code{baselines/} and \code{interventions/} therefore cannot supply the combined family batch and its \code{families/} workspace
+must be prepared once.
+
+
+\paragraph{Memory guardrails}
+Long MATLAB/Simulink batches can accumulate memory in the MATLAB engine, Simulink runtime, or \code{parpool} workers, eventually causing the job to be killed for excessive memory usage (see logbook entry).
+\agentProposedEdit{tracebench-matlab-memory-guard-contract}{
+The documented RSS-only threshold should be replaced by the current recycling-cadence and available-memory contract.
+}{
+To bound this growth, the runner logs process-tree memory per chunk and restarts MATLAB when memory exceeds \code{TRACEBENCH_MATLAB_ENGINE_RESTART_RSS_GB}.
+}{
+To bound this growth, the runner records host, cgroup, and process-group memory at startup and after every persisted chunk, recycles MATLAB at the cadence configured by \code{TRACEBENCH_MATLAB_ENGINE_RECYCLE_CHUNKS} or when available memory falls below \code{TRACEBENCH_MATLAB_MIN_AVAILABLE_GB}, and stops safely if recycling does not restore the configured floor.
+}
+A restart closes Simulink models, deletes the active \code{parpool}, quits the MATLAB engine, and starts a fresh engine before the next chunk.
+This happens only after a chunk has been serialized, validated, and persisted to \code{model_record.json}; completed chunks therefore survive the restart.
+
+\section*{Validation Rules}
+
+In addition to run-specific validation, the stage asserts that:
+
+\begin{itemize}
+\item every selected \code{run_id} must appear in \code{runs/model_record.json};
+\item every \code{success} entry for a selected run must have a corresponding \code{runs/<run_id>/data.parquet} artifact;
+\item every stored \code{recipe_hash} in \code{model_record.json} must match the \code{recipe_hash} in \code{run_nodes.jsonl};
+\item every persisted \code{recipe.json} must match the selected run node's canonical recipe;
+\item before detectability, each intervention must match its family baseline within absolute tolerance \code{1e-3} at every sample strictly before the intervention time;
+\item run folders outside the selected plan must not be deleted unless an explicit cleanup mode is enabled.
+\end{itemize}
+
+\section*{Test-Suite Invariants}
+
+The test suite should cover behavior that is expected to remain equivalent across execution modes, but is not asserted on every runtime invocation:
+
+\begin{itemize}
+\item materializing the same selected runs with one worker and with multiple workers should produce equivalent \code{recipe.json}, \code{data.parquet}, and success/failure records.
+\item family reuse must give bit-for-bit identical samples between each child and its simultaneously produced baseline strictly
+before the effective event, and continuous signals must remain identical through the event sample;
+\item independently simulated baseline and target oracles must agree with reused output within numerical tolerances for every
+supported BallDrop intervention type: drag, gravity, mass, and restitution;
+\item every captured operating point must have the exact requested effective time, every restart must pass the continuity envelope,
+and an intentionally rejected family must complete successfully through the individual fallback path.
+\end{itemize}
+
+\section*{Troubleshooting: MathWorks Online Licensing State}
+
+If Stage: Simulate cannot start MATLAB even though the MATLAB installation is present, check for stale MathWorks online-licensing state in the user's home directory.
+This has previously affected \code{L7161}: MATLAB was unable to reuse the existing online license state until the local MathWorks licensing, credentials, and ServiceHost state were moved aside and regenerated by an interactive MATLAB login.
+
+First inspect MATLAB and MathWorks background processes scoped to the current user:
+
+\begin{DocCode}
+pkill -TERM -u "$USER" -f 'MATLAB|matlab|MathWorks|MathWorksServiceHost|MATLABWindow|matlabwindow|mvm|xvfb|fluxbox'
+\end{DocCode}
+
+This could be enough, although if not, we need to delete some credential files and regenerate them. 
+Specifically
+
+
+\begin{itemize}
+\item \code{~/.matlab/credentials/} (also located at \code{/Users/tbe/Library/Application Support/MathWorks/credentials})
+\item \code{~/.MathWorks/licensing/} (also located at \code{/Users/tbe/Library/Application Support/MathWorks/credentials})
+\item \code{~/.MathWorks/ServiceHost/l7161/} (also located at \code{/Users/tbe/Library/Application Support/MathWorks/credentials})
+\end{itemize}
+
+On the previous recovery, new credential keys appeared after login and \code{~/.MathWorks/licensing/licenses/license_mhkokgon.mwlicx} appeared afterward.
+Once those files exist, retry the simulate stage.
+
+\phantomsection\label{sec:simulation-model-record-schema}
+\section*{\code{model_record.json} Schema}
+
+\begin{DocCode}
+{
+  "<run_id>": {
+    "run_type": "baseline|intervention|time0_baseline",
+    "family_id": "<family_id>",
+    "recipe_hash": "<32-hex-hash>",
+    "status": "not_run|success|failed|not_detectable",
+    "timestamp": "...",
+    "last_policy_id": "<policy_id>",
+    "class_internal": "gravity|mass|...|no_intervention|",
+    "class_agent_facing_name": "gravity|mass|...|no intervention|",
+    "simulation_stage_pre_intervention_validation": {
+      "status": "failed",
+      "reason": "value_mismatch|time_grid_mismatch|...",
+      "baseline_run_id": "<run_id>",
+      "intervention_run_id": "<run_id>",
+      "absolute_tolerance": 0.001,
+      "compared_sample_count": 9,
+      "max_abs_difference": 0.42,
+      "max_abs_difference_by_signal": {"signal": 0.42},
+      "first_mismatch_time": 0.1
+    }
+  }
+}
+\end{DocCode}
+
+The \code{recipe_hash} field is copied from \code{run_nodes.jsonl}.
+The runtime inventory does not define the recipe; it only records the materialization status of a recipe whose canonical definition lives in the resolved run graph.
+The \code{simulation_stage_pre_intervention_validation} object is present only when that validation fails.
+
+\appendix
+\section{Simulation CLI Options}
+\phantomsection\label{sec:simulate-cli-options}
+
+\begin{itemize}
+\item \code{--model}: selected \termSimulator. If omitted, the script iterates over \hyperref[sec:allowed-tracebench-models]{all
+allowed \name{} \termSimulators}.
+\item \code{--policy}: policy identifier. The script reads the resolved run graph under \code{models/simulink/<simulator_id>/
+plans/<policy_id>/}.
+\item \code{--matlab-workers}: number of MATLAB \code{parpool} workers. The default is \code{1}. Values greater than \code{1}
+require MATLAB's Parallel Computing Toolbox.
+\item 
+\agentProposedEdit
+  {agent-add-066d5185-fec3-5d34-8d99-fc4caa3fd290}
+  {Add this agent-authored block for review.}
+  {}
+  {With \code{--matlab-workers} greater than \code{1}, the runner automatically attempts one uninterrupted baseline plus exact operating-point branches whenever a pending baseline and its pending interventions can be submitted together.
+The serial individual path is used with one worker, existing baseline artifacts are never treated as outputs of a newly computed baseline, and any family-mode failure automatically runs the submitted family members individually.}
+\item \code{--overwrite}: mark all selected runs as \code{not_run} and materialize them again.
+\item \code{--rerun-failed}: mark only selected runs currently recorded as \code{failed} as \code{not_run} and materialize them
+again.
+\item \code{--raise-on-errors}: stop on an error instead of continuing the batch. A pre-intervention integrity mismatch persists its \code{failed} status and diagnostic before the error is raised.
+\item \code{--debug}: persist per-run debug artifacts under \code{runs/<run_id>/debug/}.
+\item \code{--run-id}: materialize only the specified \code{RUN_ID}. The run must appear in the selected \code{--policy}.
+\item \code{--runs-root}: optional base directory for final run artifacts. When set, each \termSimulator writes to
+\code{RUNS_ROOT/<simulator_id>/runs/}.
+\item \code{--matlab-cache-root}: optional base directory for MATLAB/Simulink generated cache files. If omitted, MATLAB uses its
+normal cache and preference locations.
+\item \code{--prepared-workspace-root}: prepared MATLAB workspace root to use now. If it already contains prepared jobs,
+preparation is skipped; otherwise the runner prepares into this root and preserves it.
+\item \code{--keep-prepared-workspace}: preserve an automatically created prepared workspace root after the run, so it can be
+reused later with \code{--prepared-workspace-root}.
+\item \code{--profile-timing}: write per-phase timing records to \code{profile_timing.jsonl} in the selected run root.
+\end{itemize}
+
+\agentProposedEdit
+  {agent-add-f98b000f-9682-5dcb-9787-2f66cb93f318}
+  {Add this agent-authored block for review.}
+  {}
+  {Existing permanent run snapshots can be migrated with \code{workflows/simulate/migrate_run_model_artifacts.py}, which defaults to a hash-recorded dry run and requires \code{--apply} for atomic renames.}
+
+\code{SIMSCAPE_CUSTOM_PATH} must point to the directory containing custom Simscape blocks.
+For large parallel batches, set \code{TMPDIR} to node-local scratch so prepared MATLAB workspaces are not created under a small
+system temporary directory.
+
+\begin{DocCode}
+SIMSCAPE_CUSTOM_PATH=/csem/divr/users/tbe/repo/TraceBench/simscape_custom
+TMPDIR=/scratch/tbe/tracebench_tmp
+\end{DocCode}
+
+The parallel MATLAB runner also accepts these environment variables:
+
+\begin{itemize}
+\item \code{TRACEBENCH_MATLAB_PARPOOL_CHUNK_SIZE}: number of jobs submitted to MATLAB per chunk, by default matlab-workers*10
+\item \code{TRACEBENCH_MATLAB_FUTURE_TIMEOUT_S}: per-running-future timeout. A timed-out future is canceled and recorded as failed
+instead of blocking the entire chunk. By default 3600
+\agentProposedEdit{tracebench-matlab-memory-log-variable}{
+The memory-log variable should use the same MATLAB namespace as the remaining runtime controls.
+}{
+\item \code{TRACEBENCH_MEMORY_LOG_PATH}: optional JSONL file for per-chunk memory telemetry.
+}{
+\item \code{TRACEBENCH_MATLAB_MEMORY_LOG_PATH}: optional JSONL file for startup, persisted-chunk, and post-recycle memory telemetry.
+}
+\agentProposedEdit{tracebench-matlab-recycle-floor-variables}{
+The old RSS-only variable should be replaced by the two controls implemented by the current runner.
+}{
+\item \code{TRACEBENCH_MATLAB_ENGINE_RESTART_RSS_GB}: process-tree RSS threshold in GB above which the runner recycles MATLAB after the current chunk has been persisted. By default 128GB
+}{
+\item \code{TRACEBENCH_MATLAB_ENGINE_RECYCLE_CHUNKS} sets the number of persisted chunks between scheduled engine recycles, while \code{TRACEBENCH_MATLAB_MIN_AVAILABLE_GB} sets the available-memory floor checked before the parpool starts and after every persisted chunk.
+}
+\end{itemize}
+
+
+\section*{Logbook of issues}
+\begin{itemize}
+\item \code{20260630}, \code{019f13b1-c97e-7e61-a2fb-5d4fdc8dd014}: The policy only names user-level parameters like \code{initial_height}; \code{length_nominal_value} is the Simscape block parameter behind the Initial Height source. The exact error points to Fast Restart, not an out-of-range physics result.
+\item \code{20260706}: The \code{ball_drop_50000_families_v1} resume job progressed through \code{137440/309168} pending \code{time0_baseline} simulations, then the long-lived MATLAB/parpool runner was killed while submitting chunk \code{860/1933}; LSF
+  reported peak memory of about \code{246.4 GB}. The mitigation is to log memory per chunk and recycle MATLAB/parpool periodically or when process-tree RSS crosses a configured threshold, so completed chunks remain persisted while cumulative Simulink state is
+  bounded.
+\item \code{20260714}: Persistent MATLAB process-pool workers could retain a loaded model named \code{simulink_model} from a previous prepared workspace. Since \code{sim_the_model.m} skipped \code{load_system} whenever that model name was already loaded, a later run could simulate the earlier job's model while storing the later run's recipe and model snapshot. The runner now unloads the model between jobs and rejects pre-intervention baseline/intervention differences above \code{1e-3}. Existing datasets produced before this fix are not rewritten automatically and must be regenerated or audited separately.
+\item \code{20260715}: Family baseline reuse was added as an opt-in optimization. The baseline artifact and all reused branches are
+now produced by the same uninterrupted baseline simulation. This same-future rule is required for contact models: an earlier
+prototype recomputed the baseline separately and a mass family diverged before its intervention by about \code{0.396} in velocity
+and \code{1514} in hard-stop force. The four-type integration oracle now requires an exact shared prefix, exact snapshot times,
+bounded restart residuals, and agreement with independent baseline and physics-target simulations; family errors fall back to the
+individual path.
+\item \agentProposedEdit
+  {agent-add-89e044c2-c0f1-5e22-89e1-ed94f6ea5d0b}
+  {Add this agent-authored block for review.}
+  {}
+  {On \code{20260810}, serial and parallel materialization adopted the deterministic model name \code{simulink_model_<run_id>}, prepared-workspace manifests advanced to version 3, legacy permanent artifacts remained readable, and 1,996 local snapshots were renamed without content changes.}
+\item \agentProposedEdit
+  {agent-add-2ad326d0-1ff0-52c6-a04d-b43fb2b085a0}
+  {Add this agent-authored block for review.}
+  {}
+  {On \code{20260819}, the active MassSlide policy \code{massslide_fcprod_massslide_fcprod_auc070_20260818T133000Z_b0005_core_pregated} caused four global kernel OOM events between \code{16:16} and \code{16:48} while using one persistent six-worker MATLAB pool.}
+\item \agentProposedEdit
+  {agent-add-7b651f3f-e4da-5e79-9388-81e9551e3059}
+  {Add this agent-authored block for review.}
+  {}
+  {At the first OOM snapshot, the six MATLAB workers used about \code{45.0 GiB} of resident memory, Tommaso's processes used \code{53.6 GiB}, Damian's concurrent Jupyter-launched PyTorch job used \code{4.1 GiB} and later grew to \code{4.5 GiB}, and all \code{8 GiB} of swap was exhausted.}
+\item \agentProposedEdit
+  {agent-add-fe1e43c8-1bf9-5634-8d3c-25b8d0351db4}
+  {Add this agent-authored block for review.}
+  {}
+  {The immediate cause was combined host-memory oversubscription, while the primary controllable defect was that the same MATLAB pool was reused across the long batch without the memory telemetry and engine recycling described earlier in this document.}
+\item \agentProposedEdit
+  {agent-add-b6c8d000-83a2-5ff8-990e-fceb744e402c}
+  {Add this agent-authored block for review.}
+  {}
+  {The campaign was stopped after chunk \code{96/105} with \code{5760/6291} jobs durably persisted, and the kernel, process, state, and log evidence was preserved under the campaign's timestamped \code{recovery/} directory.}
+\item \agentProposedEdit
+  {agent-add-40078fff-daca-5289-a207-8b42aa7bfcbe}
+  {Add this agent-authored block for review.}
+  {}
+  {The pinned runtime is configured to resume with four MATLAB workers, \code{TRACEBENCH_MATLAB_PARPOOL_CHUNK_SIZE=24}, durable telemetry at the default \code{matlab_memory.jsonl} path or the override \code{TRACEBENCH_MATLAB_MEMORY_LOG_PATH}, \code{TRACEBENCH_MATLAB_MIN_AVAILABLE_GB=16}, and \code{TRACEBENCH_MATLAB_ENGINE_RECYCLE_CHUNKS=10}, with persistence occurring before every recycle decision.}
+\item \agentProposedEdit
+  {agent-add-1bd3425b-5f96-5f20-91e6-e2932d56d182}
+  {Add this agent-authored block for review.}
+  {}
+  {Resume validation remains paused because every fresh MATLAB startup currently aborts in the \code{MatlabPathMeta} thread after the host CPU random-generator diagnostic returns \code{0xffffffffffffffff} on every tested core, so the desktop must be rebooted before the smoke campaign and checkpoint resume.}
+\end{itemize}
+
+
+\end{document}

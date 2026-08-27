@@ -1,0 +1,205 @@
+\documentclass[11pt]{article}
+\usepackage{manual_docs_style}
+\externaldocument{build/agent_profiles}[agent_profiles.pdf]
+
+\begin{document}
+
+\docTitle[Agent Trajectory Schema]{Agent Trajectory Schema}
+\phantomsection\label{docstart:atif_transcription}
+Because each agent platform emits trajectories in a different format, this stage converts the platform-specific outputs into a single canonical format.
+The exporter also emits a normalized projection consumed by the trajectory PDF renderer.
+The next stage, \href{agentic_trajectory_evaluation.pdf}{Agentic Trajectory Evaluation}, consumes both outputs to extract the trajectory-level measurements reported in the paper and generate trajectory PDF renderings.
+The canonical format is based on ATIF v1.6 \url{https://github.com/harbor-framework/harbor/blob/main/rfcs/0001-trajectory-format.md} and includes the documented TraceBench extensions below.
+
+\section*{Inputs, outputs, and commands}
+
+The exporter accepts either an agentic run identifier or an explicit run directory:
+\begin{DocCode}
+python workflows/rollout/export_atif_trajectory.py [<agentic_run_id>] [--path PATH]
+\end{DocCode}
+Exactly one of \code{<agentic_run_id>} and \code{--path} must be provided.
+When \code{<agentic_run_id>} is provided, it resolves to:
+\begin{DocCode}
+terminal-bench/runs/<agentic_run_id>
+\end{DocCode}
+
+The exporter reads:
+\begin{itemize}
+  \item \code{scenario_info.json} for run metadata, including \code{agent_id}, \code{question_id}, \code{tag}, and \code{platform_id};
+  \item the platform-specific raw trajectory from the selected trial's \code{agent_logs} directory, such as \code{rollout-*.jsonl} for Codex or \code{.claude/projects/*.jsonl} for Claude.
+\end{itemize}
+
+The exporter writes the canonical trajectory and its PDF-rendering projection to the selected trial's \code{agent_logs/atif_processed} directory:
+\begin{itemize}
+  \item \code{atif_trajectory.json}: the canonical ATIF trajectory;
+  \item \code{atif_trajectory.pdf.json}: the normalized projection used for PDF rendering.
+\end{itemize}
+
+Each supported platform has its own parser.
+The supported platform IDs are defined in \code{shared/platform.json}.
+Conversion is available only for platform IDs with an explicit parser.
+If \code{scenario_info.json} references an unsupported \code{platform_id}, the converter raises an explicit error instead of silently skipping logs or writing partial ATIF output.
+
+\section*{\texorpdfstring{\titlecode{atif_trajectory.json}}{atif_trajectory.json} schema}
+
+The top-level object has the following shape:
+
+\begin{DocCode}
+{
+  "tag": "...",                  # run tag
+  "question_id": "...",          # question identifier
+  "agent_id": "...",             # agent profile identifier
+  "session_id": "...",           # agentic run identifier
+  "final_metrics": { ... },      # aggregate metrics described below
+  "context_compactions": [ ... ], # context-reset events described below
+  "is_context_compacted": false, # true iff context_compactions is non-empty
+  "steps": [ ... ]               # trajectory steps
+}
+\end{DocCode}
+
+
+\phantomsection
+\section*{\texorpdfstring{\titlecode{final_metrics}}{final_metrics}}
+\label{sec:atif-final-metrics}
+
+Token usage and cost are computed as follows:
+\begin{DocCode}
+total_prompt_tokens =
+  sum(input_cached_prompts_i + input_non_cached_prompts_i)
+
+total_completion_tokens =
+  sum(completion_tokens_i)
+
+total_cached_tokens =
+  sum(input_cached_prompts_i)
+
+non_cached_total =
+  total_prompt_tokens - total_cached_tokens
+\end{DocCode}
+
+\phantomsection
+\label{metric:atif-total-cost}
+\begin{DocCode}
+total_cost_usd =
+  non_cached_total * cost.input_token / 1_000_000
+  + total_cached_tokens * cost.cached_token / 1_000_000
+  + total_completion_tokens * cost.completion_token / 1_000_000
+\end{DocCode}
+
+\code{non_cached_total} must be nonnegative.
+Per-token costs are agent-specific and are defined in the \hyperref[docstart:agent_profiles]{Agent Profiles Reference}.
+
+\begin{itemize}
+  \item \code{total_steps}: the total number of trajectory steps.
+  \item \code{total_duration}: the cumulative agent-response latency, computed as \code{sum(steps[i].duration)} over logical response steps whose \code{source} is \code{AGENT}.
+  \item \code{total_tool_duration}: the wall-clock duration of the union of all recorded tool-execution intervals.
+  Overlapping tool calls therefore contribute only once to this aggregate.
+\end{itemize}
+
+\section*{Context compaction}
+
+\code{context_compactions} records context-reset events in chronological order:
+\begin{DocCode}
+{
+  "after_step_id": 17,
+  "agent_iteration": 9,
+  "summary": "..."
+}
+\end{DocCode}
+
+\begin{itemize}
+  \item \code{after_step_id}: the final trajectory step before the context reset.
+  \item \code{agent_iteration}: the one-based index among \code{AGENT} steps of the first agent iteration after the reset.
+  \item \code{summary}: the replacement context summary when the source platform exposes it; otherwise, \code{null}.
+\end{itemize}
+
+\code{is_context_compacted} is \code{true} exactly when \code{context_compactions} is non-empty.
+For deterministic evaluation, a compaction event is treated as a hard context reset: content preceding \code{after_step_id} is not assumed to remain visible in subsequent iterations.
+The replacement summary, when present, is treated as new context rather than as retained original messages or observations.
+
+\section*{\texorpdfstring{\titlecode{steps}}{steps}}
+
+One \code{AGENT} step represents one complete provider assistant message or model response.
+When a source platform records a response as multiple streamed events or content blocks, the converter groups all reasoning, text, and tool-call blocks that share the same provider message identifier into one step.
+When the provider does not expose a message identifier, an equivalent stable request identifier may be used.
+The order of the grouped blocks is preserved: reasoning blocks contribute to \code{reasoning_content}, text blocks contribute to \code{message}, and every tool-call block contributes an entry to \code{tool_calls}.
+Tool results are attached as observations to the same logical response step through their tool-call identifiers.
+
+\begin{itemize}
+  \item \code{step_id}: integer step identifier.
+  \item \code{timestamp}: time at which the final block of the logical step is emitted.
+  \item \code{duration}: agent-response latency in seconds; present only when \code{source} is \code{AGENT}.
+  It is measured from the request-ready time to the step timestamp.
+  The request-ready time is the source-recorded request-dispatch or dequeue time when available; otherwise, it is the latest timestamp among the user or system input and prerequisite tool observations that make the request ready to issue.
+  This duration is an end-to-end response measurement that may include inference, streaming, transport, and runtime overhead; it is not a measurement of pure internal model reasoning.
+  \item \code{source}: one of \code{USER}, \code{AGENT}, or \code{SYSTEM}. \code{SYSTEM} represents an external system event, such as a cron job, and is not expected in this workflow.
+  \item \code{message}: required string containing the dialogue text emitted in the step. For an agent step that contains tool calls but no dialogue text, this is the empty string; the converter must not synthesize a message from a tool name or its arguments.
+  \item \code{reasoning_content}: optional reasoning text exposed by the model and preserved by the source platform.
+  In the verified MiniMax/OpenCode/OpenRouter path, retained recorded reasoning is replayed in subsequent model requests and therefore contributes to later prompt-token counts.
+  Reasoning that the provider does not expose is not recorded in ATIF and must not be assumed to be replayed.
+  \item \code{tool_calls}: array of \code{ToolCall} objects.
+  \item \code{observation}: array of \code{Observation} objects.
+  \item \code{metrics}: per-step token accounting, when available, with the following fields:
+    \begin{itemize}
+      \item \code{prompt_tokens};
+      \item \code{completion_tokens}, including reasoning tokens;
+      \item \code{cached_tokens};
+      \item \code{non_reasoning_completion_tokens}, the non-reasoning portion of \code{completion_tokens}, when the provider exposes the split;
+      \item \code{reasoning_completion_tokens}, the reasoning or thought portion of \code{completion_tokens}, when the provider exposes the split.
+    \end{itemize}
+  \phantomsection\label{metric:atif-completion-token-accounting}%
+  The two completion-split fields are TraceBench extensions to ATIF v1.6.
+  They are either both nonnegative integers or both \code{null}.
+  When present, their sum must equal \code{completion_tokens}.
+  For GPT/Codex, \code{completion_tokens} is the inclusive provider \code{output_tokens}, and \code{reasoning_output_tokens} must not be added to it again.
+  For Gemini, the total is \code{output + thoughts + tool}, with \code{thoughts} as the reasoning portion.
+  For MiniMax/OpenCode, \code{completion_tokens} reconstructs the inclusive provider output as \code{output + reasoning}.
+  Legacy OpenCode records may contain a negative \code{output} value when an inconsistent upstream reasoning detail exceeds the inclusive output total.
+  When the reconstructed total is nonnegative but the components do not form a nonnegative partition, the converter retains \code{completion_tokens} and sets both split fields to \code{null}; it never emits a negative non-reasoning count.
+  Such an invalid usage split does not imply that recorded reasoning was omitted from subsequent prompts.
+  For Claude, \code{completion_tokens} is \code{output_tokens} and both split fields are \code{null} because the current trajectories do not expose a separate reasoning-token count.
+\end{itemize}
+
+\section*{\texorpdfstring{\titlecode{ToolCall Schema}}{ToolCall Schema}}
+\begin{itemize}[leftmargin=2em]
+  \item \code{tool_call_id}: identifier for the tool call.
+  \item \code{function_name}: platform-specific tool or function name.
+  \item \code{arguments}: arguments passed to the tool.
+  \item \code{timestamp}: source-recorded time at which the tool call begins execution or is dispatched for execution.
+\end{itemize}
+
+\section*{\texorpdfstring{\titlecode{Observation Schema}}{Observation Schema}}
+\begin{itemize}[leftmargin=2em]
+  \item \code{source_call_id}: identifier that must match the \code{tool_call_id} of a tool call in the containing \code{AGENT} step.
+  \item \code{content}: output returned by the tool.
+  \item \code{timestamp}: time at which the tool result is returned.
+    \begin{itemize}
+      \item For \code{gemini-cli} session JSON, this value is read from \nolinkurl{messages[i].toolCalls[j].timestamp}.
+    \end{itemize}
+  \item \code{duration}: seconds elapsed between the matched tool call's timestamp and the observation timestamp.
+\end{itemize}
+
+\section*{\texorpdfstring{\titlecode{atif_trajectory.pdf.json}}{atif_trajectory.pdf.json}}
+\phantomsection\label{sec:atif-pdf-projection}
+
+The projection contains only source-provenance metadata and the content needed to render the transcript in trajectory PDFs.
+\begin{DocCode}
+{
+  "schema_version": 2,
+  "source_atif_trajectory_path": "/abs/path/to/atif_trajectory.json",
+  "numeric_excluded_identifiers": [ ... ],
+  "steps": [ ... ]
+}
+\end{DocCode}
+
+The normalized steps preserve the provider-authored message content, including empty messages on tool-only steps, while adding deterministic rendering hints, such as identifiers for read-tool calls and a classification of Python source dumps.
+\section*{Semantic rules}
+\begin{itemize}
+  \item Distinct streamed records that share a provider message identifier must not be emitted as separate \code{AGENT} steps.
+  \item Every observation must match a tool call in its containing \code{AGENT} step.
+  \item All computed step, observation, and aggregate durations must be nonnegative.
+  \item When a per-step completion-token split is available, its two fields must sum to the inclusive \code{completion_tokens} value.
+  \item If the source format exposes cumulative token counts, the corresponding exporter-computed values must match them.
+\end{itemize}
+Conversion fails if any rule is violated.
+\end{document}

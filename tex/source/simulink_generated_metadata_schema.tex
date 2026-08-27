@@ -1,0 +1,93 @@
+\documentclass[11pt]{article}
+\usepackage{manual_docs_style}
+
+\begin{document}
+\docTitle{Simulink Generated Metadata Schema}
+\phantomsection\label{docstart:simulink_generated_metadata_schema}
+
+\section*{Overview}
+A \termSimulator becomes usable once the required files exist, \code{build_metadata.py} has been run for \code{simulink_model_original.mdl}, and the \termSimulator has been added to \code{shared/benchmark_utils.py::ALLOWED_TRACEBENCH_MODELS}.
+
+
+\phantomsection\label{sec:simulink-build-metadata-stage}
+\code{models/simulink/<simulator_id>/generated/metadata.json} is the extracted manifest produced by
+\begin{DocCode}
+workflows/simulate/build_metadata.py [--model SIMULATOR] [--overwrite]
+\end{DocCode}
+It is a programmatically generated artifact not to be edited manually.
+This script must run before any downstream manual environment files are authored. It only depends on \code{simulink_model_original.mdl}.
+\begin{itemize}
+\item which model workspace variables are externally exposed for \name{} run configuration. This set includes both the intervenable parameters and baseline-only initial-state variables.
+\item how those parameters map to Simulink block parameters
+\item which internal Simulink and Simscape signals are available to downstream code
+\end{itemize}
+
+Additionally, \code{build_metadata.py} validates the \code{.mdl}. Specifically, it checks that:
+\begin{itemize}
+  \item there must be a variable named \code{end_time_input_s} in the WSMATLABCode, and the Simulink simulation must resolve to it to define \code{StopTime}.
+  \item If the model contains Simscape Solver Configuration blocks, each block must use the local implicit fixed-step solver. The model workspace must define \code{local_solver_step_size}, each Solver Configuration block must set \code{UseLocalSolver=on}, \code{LocalSolverChoice=NE_BACKWARD_EULER_ADVANCER}, and \code{LocalSolverSampleTime=local_solver_step_size}.
+  \item If the model does not contain Simscape Solver Configuration blocks, the global Simulink solver must be fixed-step. The model workspace must define \code{local_solver_step_size}, \code{SolverType} must be \code{Fixed-step}, and \code{FixedStep} must be \code{local_solver_step_size}.
+  \item All entries in \code{simulink_signals_available} contain no spaces. The recommended naming convention is \code{Pascal\_Case}, for example \code{Ball_Center_Speed}.
+\end{itemize}
+
+
+The source-of-truth Pydantic model for the schema is located at \code{shared/interface/simulink_metadata_json.py}. The JSON Schema artifact is generated from it.
+
+\section*{Input}
+A Simulink model in \code{.mdl} format that contains, in WSMATLABCode, all parameter variables that need to be exposed (scalars).
+
+\section*{Top-Level \code{metadata.json} Schema}
+
+The top-level object has:
+\begin{itemize}
+\item \code{parameter_set}: array of primitive Model Workspace parameters whose values do not depend on other variables. 
+  These are the externally exposed parameters, and \code{experiment_config.json::exposed_variables.parameters} and  \code{experiment_config.json::exposed_variables.initial_state}   must be a subset of this set.
+\item \code{intervention_block_map}: object keyed by parameter name
+\item \code{default_values}: object keyed by parameter name with numeric default values. This must include \code{parameter_set} + \code{end_time_input_s}.
+\item \code{simulink_signals_available}: array of all available Simulink signal names (internal names)
+\item \code{simscape_signals_available}: array of all available Simscape signals
+\end{itemize}
+
+\section*{\texorpdfstring{\titlecode{intervention\_block\_map}}{intervention_block_map} Schema}
+
+This object is keyed by parameter name.
+
+Each value is an object with one field:
+
+\begin{itemize}
+\item \code{parameters}: array of block bindings
+\end{itemize}
+
+Each block binding contains:
+
+\begin{itemize}
+\item \code{path}: Simulink block path
+\item \code{name}: block parameter name
+\item \code{expression}: symbolic expression that links the block parameter back to the workspace variable
+\item \code{runtime_type}: boolean indicating whether the parameter can be changed through the runtime path used by the \termSimulator
+\end{itemize}
+
+Example:
+
+\begin{DocCode}
+"mass": {
+  "parameters": [
+    {
+      "path": "simulink_model_original/Mass\nCenter",
+      "name": "mass",
+      "expression": "mass",
+      "runtime_type": true
+    }
+  ]
+}
+\end{DocCode}
+
+\section*{Signal Availability Fields}
+
+\code{simulink_signals_available} lists observable signals logged through the Simulink path.
+
+\code{simscape_signals_available} lists all available signals through Simscape.
+These two fields use the internal names that are then used by other scripts, except for \code{time}, which is added separately.
+
+
+\end{document}

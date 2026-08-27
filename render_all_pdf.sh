@@ -2,6 +2,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+DOCS_ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 PROJECT_NAME="$(basename "${SCRIPT_DIR}")"
 PROJECT_NAME="${PROJECT_NAME#docs-}"
 MANUAL_DIR="${SCRIPT_DIR}/manual"
@@ -10,12 +11,14 @@ MANUAL_SUPPORT_DIR="${MANUAL_DIR}/support"
 BUILD_DIR="${SCRIPT_DIR}/build"
 WRAPPER_DIR="${SCRIPT_DIR}/.render_wrappers"
 OUTPUT_DIR="${SCRIPT_DIR}/pdf"
-LATEX_TEXINPUTS="${MANUAL_SUPPORT_DIR}//:${MANUAL_SRC_DIR}//:${SCRIPT_DIR}//:"
+CURRENT_OUTPUT_DIR="${DOCS_ROOT_DIR}/current_pdfs"
+LATEX_TEXINPUTS="${DOCS_ROOT_DIR}/tools/latex//:${MANUAL_SUPPORT_DIR}//:${MANUAL_SRC_DIR}//:${SCRIPT_DIR}//:"
 NUMBERED_SUFFIX="_numbered"
 COMBINED_OUTPUT_FILE="${OUTPUT_DIR}/${PROJECT_NAME}_docs_combined_compact.pdf"
 COMBINED_DOCS_ONLY_FILE="${BUILD_DIR}/docs_combined_compact_docs_only.pdf"
 COMBINED_NUMBERED_OUTPUT_FILE="${OUTPUT_DIR}/${PROJECT_NAME}_docs_combined_compact${NUMBERED_SUFFIX}.pdf"
 COMBINED_NUMBERED_DOCS_ONLY_FILE="${BUILD_DIR}/docs_combined_compact_docs_only${NUMBERED_SUFFIX}.pdf"
+CURRENT_COMBINED_OUTPUT_FILE="${CURRENT_OUTPUT_DIR}/${PROJECT_NAME}.pdf"
 DRIVE_TARGET_RELATIVE="My Drive/android_pdf"
 INDEX_SOURCE_FILE="${MANUAL_SRC_DIR}/documentation_index.tex"
 INDEX_OVERRIDES_FILE="${BUILD_DIR}/documentation_index_page_overrides.tex"
@@ -23,13 +26,20 @@ DOC_ORDER_MANIFEST="${MANUAL_DIR}/docs_order_manifest.txt"
 STANDALONE_APPENDIX_FILE="appendix_extended_related_work.tex"
 COMBINED_INCLUDE_FILE="${BUILD_DIR}/docs_combined_manifest_inputs.tex"
 LAYOUT_CONFIG_FILE="${MANUAL_SUPPORT_DIR}/manual_docs_layout_config.tex"
+BIB_COMPAT_DIR="${BUILD_DIR}/bibinputs"
 LEFT_PADDING_DELTA="0pt"
 RIGHT_PADDING_DELTA="0pt"
 NIPS_LEFT_PADDING_DELTA="0pt"
 NIPS_RIGHT_PADDING_DELTA="0pt"
-NIPS_BUILD_SCRIPT="${SCRIPT_DIR}/overleaf_paper/build.sh"
-NIPS_MAIN_PDF="${SCRIPT_DIR}/overleaf_paper/archive/compiled/main.pdf"
-NIPS_MAIN_AUX="${SCRIPT_DIR}/overleaf_paper/build/main.aux"
+NIPS_PROJECT_DIR="${SCRIPT_DIR}/overleaf_paper"
+if [ ! -d "${NIPS_PROJECT_DIR}" ] && [ -d "${DOCS_ROOT_DIR}/docs-TraceBench-paper" ]; then
+  NIPS_PROJECT_DIR="${DOCS_ROOT_DIR}/docs-TraceBench-paper"
+fi
+NIPS_BUILD_SCRIPT="${NIPS_PROJECT_DIR}/build.sh"
+NIPS_MAIN_PDF="${NIPS_PROJECT_DIR}/archive/compiled/main.pdf"
+NIPS_MAIN_AUX="${NIPS_PROJECT_DIR}/build/main.aux"
+NIPS_REFERENCES_BIB="${NIPS_PROJECT_DIR}/tex/support/references.bib"
+LATEX_BIBINPUTS="${BIB_COMPAT_DIR}:${NIPS_PROJECT_DIR}:${SCRIPT_DIR}:"
 BUILD_COMBINED=false
 FORCE_REBUILD=false
 SKIP_PAPER=false
@@ -214,7 +224,7 @@ reconcile_doc_order_manifest() {
 
       case "${tex_name}" in
         /*|*../*|../*|*/*)
-          echo "Error: ${DOC_ORDER_MANIFEST#${SCRIPT_DIR}/} entries must be .tex filenames under manual/src: ${tex_name}" >&2
+          echo "Error: ${DOC_ORDER_MANIFEST#${SCRIPT_DIR}/} entries must be .tex filenames under tex/source: ${tex_name}" >&2
           exit 1
           ;;
         *.tex)
@@ -254,8 +264,8 @@ reconcile_doc_order_manifest() {
   temp_file="$(mktemp "${DOC_ORDER_MANIFEST}.tmp.XXXXXX")"
   {
     printf '# Canonical order for standalone docs included in the combined compact manual.\n'
-    printf '# One .tex filename per line. Do not list documentation_index.tex or\n'
-    printf '# docs_combined_compact.tex here; the build handles those separately.\n'
+    printf '# One .tex filename per line. Do not list documentation_index.tex,\n'
+    printf '# docs_combined_compact.tex, or appendix_*.tex; the build handles those separately.\n'
     for tex_name in "${reconciled_order[@]}"; do
       printf '%s\n' "${tex_name}"
     done
@@ -268,9 +278,7 @@ reconcile_doc_order_manifest() {
   fi
 }
 
-if [ ! -f "${DOC_ORDER_MANIFEST}" ]; then
-  reconcile_doc_order_manifest
-fi
+reconcile_doc_order_manifest
 
 indexed_tex_files=()
 while IFS= read -r tex_name || [ -n "${tex_name}" ]; do
@@ -323,6 +331,13 @@ fi
 mkdir -p "${OUTPUT_DIR}"
 mkdir -p "${BUILD_DIR}"
 mkdir -p "${WRAPPER_DIR}"
+if [ -f "${NIPS_REFERENCES_BIB}" ]; then
+  mkdir -p "${BIB_COMPAT_DIR}/overleaf_paper"
+  if [ ! -f "${BIB_COMPAT_DIR}/overleaf_paper/tex/support/references.bib" ] ||
+    ! cmp -s "${NIPS_REFERENCES_BIB}" "${BIB_COMPAT_DIR}/overleaf_paper/tex/support/references.bib"; then
+    cp "${NIPS_REFERENCES_BIB}" "${BIB_COMPAT_DIR}/overleaf_paper/tex/support/references.bib"
+  fi
+fi
 
 find_drive_target_dir() {
   local candidate
@@ -469,7 +484,7 @@ generate_combined_include_file() {
     last_index=$((${#combined_tex_files[@]} - 1))
     for tex_name in "${combined_tex_files[@]}"; do
       printf '\\setManualDocSourceName{%s}\n' "${tex_name}"
-      printf '\\input{../manual/src/%s}\n' "${tex_name}"
+      printf '\\input{../tex/source/%s}\n' "${tex_name}"
       if [ "${index}" -lt "${last_index}" ]; then
         printf '\\clearpage\n'
       fi
@@ -501,6 +516,7 @@ compile_tex() {
   if ! (
     cd "${SCRIPT_DIR}"
     TEXINPUTS="${LATEX_TEXINPUTS}${TEXINPUTS:-}" \
+      BIBINPUTS="${LATEX_BIBINPUTS}${BIBINPUTS:-}" \
       latexmk -pdf -interaction=nonstopmode -halt-on-error -file-line-error \
       -output-directory="${BUILD_DIR}" "${source_file}"
   ); then
@@ -571,6 +587,17 @@ copy_pdf_if_needed() {
     cp "${source_pdf}" "${destination}"
   fi
   register_built_pdf "${destination}"
+}
+
+copy_current_combined_pdf() {
+  if [ ! -f "${COMBINED_OUTPUT_FILE}" ]; then
+    echo "Error: expected combined PDF at ${COMBINED_OUTPUT_FILE}" >&2
+    exit 1
+  fi
+
+  mkdir -p "${CURRENT_OUTPUT_DIR}"
+  copy_pdf_if_needed "${COMBINED_OUTPUT_FILE}" "${CURRENT_COMBINED_OUTPUT_FILE}"
+  echo "Current combined PDF -> ${CURRENT_COMBINED_OUTPUT_FILE}"
 }
 
 build_nips_main() {
@@ -791,6 +818,7 @@ fi
 if ! (
   cd "${SCRIPT_DIR}"
   TEXINPUTS="${LATEX_TEXINPUTS}${TEXINPUTS:-}" \
+    BIBINPUTS="${LATEX_BIBINPUTS}${BIBINPUTS:-}" \
     latexmk -pdf -interaction=nonstopmode -halt-on-error -file-line-error \
     -output-directory="${BUILD_DIR}" "${combined_wrapper}"
 ); then
@@ -810,6 +838,7 @@ fi
 if ! (
   cd "${SCRIPT_DIR}"
   TEXINPUTS="${LATEX_TEXINPUTS}${TEXINPUTS:-}" \
+    BIBINPUTS="${LATEX_BIBINPUTS}${BIBINPUTS:-}" \
     latexmk -pdf -interaction=nonstopmode -halt-on-error -file-line-error \
     -output-directory="${BUILD_DIR}" "${combined_numbered_wrapper}"
 ); then
@@ -829,6 +858,7 @@ if [ "${SKIP_PAPER}" = "true" ]; then
   copy_pdf_if_needed "${COMBINED_DOCS_ONLY_FILE}" "${COMBINED_OUTPUT_FILE}"
   copy_pdf_if_needed "${COMBINED_NUMBERED_DOCS_ONLY_FILE}" "${COMBINED_NUMBERED_OUTPUT_FILE}"
   echo "Skipping paper merge and paper index links because --skip-paper was provided."
+  copy_current_combined_pdf
   finish
   exit 0
 fi
@@ -843,6 +873,7 @@ fi
 if ! (
   cd "${SCRIPT_DIR}"
   TEXINPUTS="${LATEX_TEXINPUTS}${TEXINPUTS:-}" \
+    BIBINPUTS="${LATEX_BIBINPUTS}${BIBINPUTS:-}" \
     latexmk -pdf -interaction=nonstopmode -halt-on-error -file-line-error \
     -output-directory="${BUILD_DIR}" "${combined_wrapper}"
 ); then
@@ -861,6 +892,7 @@ fi
 if ! (
   cd "${SCRIPT_DIR}"
   TEXINPUTS="${LATEX_TEXINPUTS}${TEXINPUTS:-}" \
+    BIBINPUTS="${LATEX_BIBINPUTS}${BIBINPUTS:-}" \
     latexmk -pdf -interaction=nonstopmode -halt-on-error -file-line-error \
     -output-directory="${BUILD_DIR}" "${combined_numbered_wrapper}"
 ); then
@@ -876,4 +908,5 @@ merge_pdfs "${COMBINED_OUTPUT_FILE}" "${COMBINED_DOCS_ONLY_FILE}" "${NIPS_MAIN_P
 merge_pdfs "${COMBINED_NUMBERED_OUTPUT_FILE}" "${COMBINED_NUMBERED_DOCS_ONLY_FILE}" "${NIPS_MAIN_PDF}"
 add_combined_index_paper_links "${COMBINED_OUTPUT_FILE}"
 add_combined_index_paper_links "${COMBINED_NUMBERED_OUTPUT_FILE}"
+copy_current_combined_pdf
 finish

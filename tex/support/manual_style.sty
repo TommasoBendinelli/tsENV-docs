@@ -1,0 +1,263 @@
+\NeedsTeXFormat{LaTeX2e}
+\ProvidesPackage{manual_style}[2026/08/03 Central manual docs PDF style]
+
+\RequirePackage[utf8]{inputenc}
+\RequirePackage[T1]{fontenc}
+\RequirePackage{lmodern}
+\RequirePackage[a4paper]{geometry}
+\RequirePackage{microtype}
+\RequirePackage{enumitem}
+\RequirePackage{fancyhdr}
+\RequirePackage{hyperref}
+\RequirePackage[numbers,compress]{natbib}
+\RequirePackage{xurl}
+\RequirePackage{xspace}
+\RequirePackage{xparse}
+\RequirePackage{xcolor}
+\RequirePackage[normalem]{ulem}
+\RequirePackage{currfile}
+\newif\ifmanualDocLineNumbers
+\manualDocLineNumbersfalse
+\makeatletter
+\@ifundefined{manualDocEnableLineNumbers}{}{%
+  \manualDocLineNumberstrue
+  \PassOptionsToPackage{left}{lineno}%
+}
+\makeatother
+\RequirePackage{fancyvrb}
+\RequirePackage{fvextra}
+\RequirePackage{etoolbox}
+\RequirePackage{array}
+\RequirePackage{amssymb}
+\RequirePackage{amsmath}
+\RequirePackage{booktabs}
+\RequirePackage{longtable}
+\RequirePackage{float}
+\RequirePackage{placeins}
+\RequirePackage{listings}
+\RequirePackage{algorithm}
+\RequirePackage{algpseudocode}
+\RequirePackage{graphicx}
+\makeatletter
+\ifmanualDocLineNumbers
+  \@ifpackageloaded{lineno}{}{\RequirePackage{lineno}}
+\fi
+\makeatother
+
+\makeatletter
+\InputIfFileExists{manual_docs_layout_config.tex}{}{}
+\@ifundefined{manualDocBrand}{%
+  \newcommand{\manualDocBrand}{Docs}%
+}{}
+\@ifundefined{manualDocDefaultSourceBaseName}{%
+  \edef\manualDocSourceBaseName{\jobname.tex}%
+}{%
+  \edef\manualDocSourceBaseName{\manualDocDefaultSourceBaseName}%
+}
+\@ifundefined{manualDocHasLocalRelatedWorkMeta}{%
+  \newcommand{\relatedWorkMeta}[6]{%
+  \paragraph{#1.}%
+    \leavevmode\par\nobreak\vspace{0.05em}%
+    \noindent{\scriptsize\setlength{\parskip}{0pt}%
+      Citation: #2.
+      First online: #3.
+      Venue: #4.
+      Repository: #5
+      AuthorsFromZH: #6
+      \\}%
+  }%
+}{}
+\makeatother
+
+\newcommand{\manualBibliography}{%
+  \bibliographystyle{plainnat}%
+  \IfFileExists{tex/generated/references.bib}{%
+    \bibliography{tex/generated/references}%
+  }{%
+    \bibliography{tex/support/references}%
+  }%
+}
+
+\geometry{
+  left=1in,
+  right=1in,
+  top=1in,
+  bottom=1in
+}
+
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{0.5em}
+\setlength{\headheight}{14pt}
+\emergencystretch=1em
+\setlength{\LTcapwidth}{\textwidth}
+
+\setlist[itemize,1]{leftmargin=1.5em,itemsep=0.25em,topsep=0.3em}
+\setlist[itemize,2]{leftmargin=2.8em,itemsep=0.1em,topsep=0.1em,font=\small}
+\setlist[enumerate,1]{leftmargin=1.7em,itemsep=0.25em,topsep=0.3em}
+
+\urlstyle{same}
+\newcommand{\manualDocName}{}
+\newif\ifmanualDocSuppressCenteredTitle
+\manualDocSuppressCenteredTitlefalse
+\newcommand{\setManualDocSourceName}[1]{\renewcommand{\manualDocSourceBaseName}{#1}}
+\newcommand{\resetManualDocSourceName}{\edef\manualDocSourceBaseName{\jobname.tex}}
+\newcommand{\suppressManualDocCenteredTitle}{\manualDocSuppressCenteredTitletrue}
+\newcommand{\showManualDocCenteredTitle}{\manualDocSuppressCenteredTitlefalse}
+\newcommand{\manualDocSourceName}{\expandafter\code\expandafter{\manualDocSourceBaseName}}
+\newcommand{\code}[1]{%
+  \begingroup
+  \urlstyle{tt}%
+  \expandafter\nolinkurl\expandafter{\detokenize{#1}}%
+  \endgroup
+}
+\newcommand{\titlecode}[1]{\code{#1}}
+\newcommand{\mcode}[1]{\text{\code{#1}}}
+\newcommand{\TexLink}[3]{%
+  \href{manual-texlink:\detokenize{#1}?label=\detokenize{#2}}{#3}%
+}
+\newcommand{\PdfLink}[3]{%
+  \href{manual-pdflink:\detokenize{#1}?anchor=\detokenize{#2}}{#3}%
+}
+\DeclareRobustCommand{\ReviewAnchor}[2]{%
+  \hypertarget{review-anchor:\detokenize{#1}}{}%
+}
+\providecommand{\ReviewCardMaskStart}[2]{}
+\providecommand{\ReviewCardMaskEnd}[2]{}
+\newif\ifagentProposalDocumentStarted
+\agentProposalDocumentStartedfalse
+\AtBeginDocument{\agentProposalDocumentStartedtrue}
+\DeclareRobustCommand{\agentEditProposalAnchor}[2]{%
+  \ifagentProposalDocumentStarted
+    \hypertarget{agent-edit:\detokenize{#1}:#2}{}%
+  \fi
+}
+\providecommand{\agentProposalRegion}[3]{%
+  % agent-proposal: URI links cannot span arbitrary structural TeX, so Thoughts
+  % derives proposal regions from the surrounding agent-edit boundary anchors.
+  #3%
+}
+\pdfstringdefDisableCommands{%
+  \def\ReviewAnchor#1#2{}%
+  \def\ReviewCardMaskStart#1#2{}%
+  \def\ReviewCardMaskEnd#1#2{}%
+  \def\agentEditProposalAnchor#1#2{}%
+  \def\agentProposalRegion#1#2#3{#3}%
+  \def\agentProposedEdit#1#2#3#4{#4}%
+}
+\providecommand{\agentImportant}[1]{#1}
+\providecommand{\agentProposedEditAfter}[1]{%
+  \if\relax\detokenize{#1}\relax
+    \textit{[delete]}%
+  \else
+    #1%
+  \fi
+}
+\providecommand{\agentProposedEdit}[4]{%
+  \agentEditProposalAnchor{#1}{after-start}%
+  \agentProposalRegion{#1}{after}{#4}%
+  \agentEditProposalAnchor{#1}{after-end}%
+}
+\providecommand{\hurl}[1]{%
+  \href{#1}{\nolinkurl{#1}}%
+}
+\newcommand{\manualDocMaybeEnableLineNumbers}{%
+  \ifmanualDocLineNumbers
+    \renewcommand{\linenumberfont}{\normalfont\tiny\sffamily\color{gray}}%
+    \setlength{\linenumbersep}{10pt}%
+    \modulolinenumbers[1]%
+    \linenumbers
+  \fi
+}
+\newcommand{\manualDocDocCodeNumberStyle}{%
+  {\linenumberfont\arabic{FancyVerbLine}}%
+}
+\newenvironment{DocComment}
+  {\begin{quote}\small\color{gray}\itshape\textbf{Comment. }}
+  {\end{quote}}
+\makeatletter
+\newcount\manualDocCodeSourceLineBase
+\newcommand{\manualDocBeginNumberedDocCode}{%
+  \nolinenumbers
+  \global\manualDocCodeSourceLineBase=\value{linenumber}\relax
+  \global\c@FancyVerbLine=0\relax
+}
+\newcommand{\manualDocEndNumberedDocCode}{%
+  \global\c@runninglinenumber=\numexpr\manualDocCodeSourceLineBase+\value{FancyVerbLine}\relax
+  \global\c@linenumber=\c@runninglinenumber
+  \linenumbers
+}
+\define@key{FV}{numbered}[true]{%
+  \FV@Numbers@left
+}
+\makeatother
+
+\newcommand{\docTitle}[2][]{%
+  \renewcommand{\manualDocName}{#2}%
+  \if\relax\detokenize{#1}\relax
+  \else
+    \renewcommand{\manualDocName}{#1}%
+  \fi
+  \fancyhf{}%
+  \fancyhead[L]{\footnotesize \manualDocBrand{} | \manualDocName{} | \manualDocSourceName}%
+  \fancyhead[R]{\today}%
+  \fancyfoot[C]{\thepage}%
+  \pagestyle{fancy}%
+  \manualDocMaybeEnableLineNumbers
+  \ifmanualDocSuppressCenteredTitle
+  \else
+    {\centering\LARGE\bfseries #2\par}%
+    \vspace{0.5em}%
+  \fi
+  \global\manualDocSuppressCenteredTitlefalse
+}
+
+\ifmanualDocLineNumbers
+  \renewcommand{\theFancyVerbLine}{\manualDocDocCodeNumberStyle}
+  \DefineVerbatimEnvironment{DocCode}{Verbatim}{
+    fontsize=\small,
+    breaklines=true,
+    breakanywhere=true,
+    breaksymbolleft={},
+    breaksymbolright={},
+    numbers=none,
+    stepnumber=1,
+    numberblanklines=true,
+    numbersep=10pt,
+    firstnumber=last
+  }
+  \DefineVerbatimEnvironment{LinkedDocCode}{Verbatim}{
+    fontsize=\small,
+    breaklines=false,
+    breaksymbolleft={},
+    breaksymbolright={},
+    numbers=none,
+    stepnumber=1,
+    numberblanklines=true,
+    numbersep=10pt,
+    firstnumber=last,
+    commandchars=\\\{\}
+  }
+  \BeforeBeginEnvironment{DocCode}{\manualDocBeginNumberedDocCode}
+  \AfterEndEnvironment{DocCode}{\manualDocEndNumberedDocCode}
+  \BeforeBeginEnvironment{LinkedDocCode}{\manualDocBeginNumberedDocCode}
+  \AfterEndEnvironment{LinkedDocCode}{\manualDocEndNumberedDocCode}
+\else
+  \DefineVerbatimEnvironment{DocCode}{Verbatim}{
+    fontsize=\small,
+    breaklines=true,
+    breakanywhere=true,
+    breaksymbolleft={},
+    breaksymbolright={},
+    numbers=none
+  }
+  \DefineVerbatimEnvironment{LinkedDocCode}{Verbatim}{
+    fontsize=\small,
+    breaklines=false,
+    breaksymbolleft={},
+    breaksymbolright={},
+    numbers=none,
+    commandchars=\\\{\}
+  }
+\fi
+
+\newcolumntype{P}[1]{>{\raggedright\arraybackslash}p{#1}}

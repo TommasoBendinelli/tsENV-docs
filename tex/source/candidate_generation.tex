@@ -1,0 +1,420 @@
+\documentclass[11pt]{article}
+\usepackage{manual_docs_style}
+\externaldocument{build/terminology_shared_utilities}[terminology_shared_utilities.pdf]
+\externaldocument{build/environment_profiles}[environment_profiles.pdf]
+\externaldocument{build/simulink_generated_metadata_schema}[simulink_generated_metadata_schema.pdf]
+\externaldocument{build/simulation_stage}[simulation_stage.pdf]
+
+\begin{document}
+
+\docTitle{Candidate Run Generation}
+\phantomsection\label{docstart:candidate_generation}
+This stage samples candidate run recipes according to the configured generation policies in \hyperref[sec:generation-policy-schema]{\code{generation_policies/<policy_id>.json}}.
+Samples are generated deterministically from a seed. 
+That is, given the same policy, simulator config, and seed, the same recipes will be produced.
+The output is a resolved run graph that defines the runnable cases later materialized by \hyperref[docstart:simulation_stage]{Stage: Simulate}.
+
+\section*{Dependencies}
+
+For each \termSimulator{} under \code{models/simulink/<simulator_id>/}, the stage reads:
+
+\begin{itemize}
+\item \code{experiment_config.json}: hard environment contract, including exposed variables, legal intervals, simulation horizon, observed signals, and detectability configuration.
+\item \code{generated/metadata.json}: generated Simulink metadata, including exposed workspace variables and intervention block mappings.
+\end{itemize}
+
+The stage writes a resolved plan under:
+
+\begin{DocCode}
+models/simulink/<simulator_id>/plans/<policy_id>/
+\end{DocCode}
+
+with these artifacts:
+
+\begin{DocCode}
+run_nodes.jsonl
+run_edges.jsonl
+generation_report.json
+\end{DocCode}
+
+\section*{Manual Cases}
+
+\code{manual_cases.jsonl} is an optional high-level authoring format for curated cases.
+Users specify baseline parameters and optional interventions; the candidate-generation compiler validates each case, expands it into runnable nodes, computes stable IDs and hashes, and writes the corresponding edges.
+Users should not manually author \code{run_nodes.jsonl} or \code{run_edges.jsonl}.
+
+Manual-only graph compilation can be run with:
+
+\begin{DocCode}
+python workflows/generate_runs/compile_run_graph.py \
+  --model BallDrop \
+  --policy manual_debug_v1 \
+  --manual-only \
+  --manual-cases manual_cases.jsonl \
+  --overwrite
+\end{DocCode}
+
+Each line of \code{manual_cases.jsonl} is one JSON object of the following form:
+
+\begin{DocCode}
+{
+“case_id”: “gravity_late_large_increase”,
+“baseline_parameters”: {
+“mass”: 4.0,
+“drag_coeff”: 0.05,
+“restitution”: 0.8,
+“gravity”: 9.81,
+“initial_height”: 3.0,
+“initial_velocity”: -2.0
+},
+“interventions”: [
+{
+“parameter”: “gravity”,
+“value”: 13.2,
+“time”: 4.0
+}
+],
+“notes”: “Curated case with late gravity increase.”
+}
+\end{DocCode}
+
+During compilation, each manual case defines one baseline family.
+For every intervention in \code{interventions}, the compiler creates the matched \code{intervention} node and \code{time0_baseline} node, then writes the corresponding \code{baseline_to_intervention} and \code{intervention_to_time0_baseline} edges.
+
+The stage writes a plan under:
+
+\begin{DocCode}
+models/simulink/<simulator_id>/plans/<policy_id>/
+\end{DocCode}
+
+with these artifacts:
+
+\begin{center}
+\begin{tabular}{p{0.30\linewidth}p{0.60\linewidth}}
+\hline
+\textbf{Artifact} & \textbf{Purpose} \\
+\hline
+\code{run_nodes.jsonl} & Flat list of runnable simulation recipes. Each line defines one baseline, intervention, or time-zero/static-change run. \\
+\code{run_edges.jsonl} & Graph relationships among runs, such as baseline-to-intervention and intervention-to-time-zero links. \\
+\code{generation_report.json} & Generation summary, including requested counts, generated counts, skipped parameter-direction requests, and coverage statistics. \\
+\hline
+\end{tabular}
+\end{center}
+
+\section*{Execution Flow}
+
+The candidate-generation stage performs the following steps:
+
+\begin{enumerate}
+\item Load \code{experiment_config.json}, \code{generation_policies/<policy_id>.json} validate internal consistency among files.
+\begin{itemize}
+  \item that all exposed variables are present in \code{generated/metadata.json}.
+  \item \code{generation_policies/<policy_id>.json} has the sampling varables correct
+\end{itemize}
+\item Resolve the random seed and initialize deterministic random-number generators.
+\item Sample baseline families according to \code{baseline_sampler}.
+\item For each baseline family, sample intervention children according to \code{intervention_sampler}.
+\item For each intervention child, create a matched time-zero/static-change recipe.
+\item Canonicalize every recipe and compute \code{recipe_hash} and \code{run_id}.
+\item Write flat runnable nodes to \code{run_nodes.jsonl}.
+\item Write baseline/intervention/time-zero relationships to \code{run_edges.jsonl}.
+\item Validate the resolved graph and write \code{validation_report.json}.
+\end{enumerate}
+
+The paper describes the third kind as the static-change probe.
+The implementation may keep the name \code{time0_baseline} for backward compatibility.
+
+\section*{\texorpdfstring{\titlecode{run_nodes.jsonl}}{run\_nodes.jsonl}}
+\phantomsection\label{sec:candidate-generation-run-nodes}
+Each line of \code{run_nodes.jsonl} is a complete runnable simulation run.
+The resolved plan gives every run a stable \code{run_id}, gives every recipe a \code{recipe_hash}, and records baseline/intervention/time-zero relationships in \code{run_edges.jsonl}.
+
+\subsection*{Minimal Shape}
+
+\begin{DocCode}
+{
+  "run_id": "run_7fd9daa0055fb3f412ef5e0ab8d4c5ba",
+  "kind": "intervention",
+  "family_id": "run_7fd9daa0055fb3f412ef5e0ab8d4c5ba",
+  "recipe_hash": "7fd9daa0055fb3f412ef5e0ab8d4c5ba",
+  "recipe": {
+    "model": "BallDrop",
+    "baseline_parameters": {
+      "mass": 4.0,
+      "drag_coeff": 0.05,
+      "restitution": 0.8,
+      "gravity": 9.81,
+      "initial_height": 3.0,
+      "initial_velocity": -2.0
+    },
+    "intervention": {
+      "parameter": "gravity",
+      "value": 13.2,
+      "time": 4.0
+    }
+  },
+  "metadata": {
+    "source": "programmatic",
+    "policy_id": "production_v1",
+    "seed": 456,
+    "generator": "compile_run_graph.py"
+  }
+}
+\end{DocCode}
+
+\section*{Node Field Definitions}
+
+\subsection*{\texorpdfstring{\titlecode{run_id}}{run\_id}}
+
+\code{run_id} is the stable identifier for one runnable recipe.
+
+Recommended form:
+
+\begin{DocCode}
+run_<32-hex-recipe-hash>
+\end{DocCode}
+
+The \code{run_id} must be unique within a plan.
+Preferably, it should be globally stable across plans: if two policies produce the exact same canonical recipe, they should produce the same \code{run_id}.
+
+\subsection*{\texorpdfstring{\titlecode{kind}}{kind}}
+
+Allowed values are \code{baseline}, \code{intervention}, and \code{time0_baseline}.
+Baseline nodes have no intervention; intervention nodes apply the changed value at \code{intervention.time}; time-zero/static-change nodes apply the changed value from time zero.
+
+\subsection*{\texorpdfstring{\titlecode{family_id}}{family\_id}}
+
+\code{family_id} groups one baseline run with its derived intervention and time-zero/static-change runs.
+All nodes generated from the same baseline recipe should share the same \code{family_id}.
+
+\subsection*{\texorpdfstring{\titlecode{recipe_hash}}{recipe\_hash}}
+
+\code{recipe_hash} is the canonical hash of the \code{recipe} object only.
+It must not include \code{metadata}.
+Hashing should use normalized JSON values, canonical JSON with sorted keys and compact separators, SHA-256, and the first 32 hexadecimal characters of the digest.
+
+\subsection*{\texorpdfstring{\titlecode{metadata}}{metadata}}
+
+\code{metadata} records provenance for the node.
+It is not part of the recipe hash.
+
+Fields include:
+
+\begin{itemize}
+\item \code{source}: typically \code{programmatic} or \code{manual}.
+\item \code{policy_id}: policy that produced the node.
+\item \code{seed}: generation seed, when applicable.
+\item \code{generator}: generator script name.
+\end{itemize}
+
+\section*{\texorpdfstring{\titlecode{recipe}}{recipe} Schema}
+
+Each node's \code{recipe} defines the exact simulator input.
+It contains:
+
+\begin{itemize}
+\item \code{model}: \termSimulator identifier.
+\item \code{baseline_parameters}: all parameters and initial-state variables required to initialize the run.
+\item \code{intervention}: changed parameter, post-intervention value, and intervention time. The top-level \code{kind} determines how these fields are interpreted.
+\end{itemize}
+
+\subsection*{Baseline Recipe}\label{sec:candidate-generation-baseline-recipe}
+
+A baseline run has \code{kind = "baseline"} and no intervention.
+
+\begin{DocCode}
+{
+  "model": "BallDrop",
+  "baseline_parameters": {
+    "mass": 4.0,
+    "drag_coeff": 0.05,
+    "restitution": 0.8,
+    "gravity": 9.81,
+    "initial_height": 3.0,
+    "initial_velocity": -2.0
+  },
+  "intervention": {
+    "parameter": null,
+    "value": null,
+    "time": null
+  }
+}
+\end{DocCode}
+
+\subsection*{Intervention Recipe}
+
+An intervention run has \code{kind = "intervention"}.
+It applies the changed value at \code{intervention.time}.
+
+\begin{DocCode}
+{
+  "model": "BallDrop",
+  "baseline_parameters": {
+    "mass": 4.0,
+    "drag_coeff": 0.05,
+    "restitution": 0.8,
+    "gravity": 9.81,
+    "initial_height": 3.0,
+    "initial_velocity": -2.0
+  },
+  "intervention": {
+    "parameter": "gravity",
+    "value": 13.2,
+    "time": 4.0
+  }
+}
+\end{DocCode}
+
+\subsection*{Time-Zero / Static-Change Recipe}\label{sec:candidate-generation-time0-baseline-recipe}
+
+A time-zero/static-change run has \code{kind = "time0_baseline"}.
+It uses the same changed parameter and post-intervention value as the matched intervention run, but the value is active from time zero.
+
+\begin{DocCode}
+{
+  "model": "BallDrop",
+  "baseline_parameters": {
+    "mass": 4.0,
+    "drag_coeff": 0.05,
+    "restitution": 0.8,
+    "gravity": 9.81,
+    "initial_height": 3.0,
+    "initial_velocity": -2.0
+  },
+  "intervention": {
+    "parameter": "gravity",
+    "value": 13.2,
+    "time": 0.0
+  }
+}
+\end{DocCode}
+
+\section*{\texorpdfstring{\titlecode{baseline_parameters}}{baseline\_parameters}}
+
+\code{baseline_parameters} contains all simulator variables required to initialize the run.
+It must include every variable listed in:
+
+\begin{DocCode}
+experiment_config.json::exposed_variables.parameters
+experiment_config.json::exposed_variables.initial_state
+\end{DocCode}
+
+All values must be finite JSON numbers.
+Each value must lie inside the corresponding \code{allowed_intervals} from \code{experiment_config.json}.
+
+Variables under \code{parameters} may be intervened on.
+Variables under \code{initial_state} are baseline-only variables and must not change after simulation start.
+
+\section*{\texorpdfstring{\titlecode{intervention}}{intervention}}
+
+\code{intervention} defines whether and how the baseline recipe is changed.
+
+Fields:
+
+\begin{itemize}
+\item \code{parameter}: changed root-cause parameter, or \code{null} for baseline runs.
+\item \code{value}: post-intervention value, or \code{null} for baseline runs.
+\item \code{time}: intervention time, \code{0.0} for time-zero/static-change runs, or \code{null} for baseline runs.
+\end{itemize}
+
+Validation depends on top-level \code{kind}:
+
+\begin{itemize}
+\item If \code{kind = "baseline"}, \code{intervention.parameter}, \code{intervention.value}, and \code{intervention.time} must be \code{null}.
+\item If \code{kind = "intervention"}, \code{intervention.parameter} and \code{intervention.value} must be non-\code{null}, and \code{intervention.time} must satisfy:
+\end{itemize}
+
+\begin{DocCode}
+0 < intervention.time < experiment_config.json::end_time_input_s
+\end{DocCode}
+
+\begin{itemize}
+\item If \code{kind = "time0_baseline"}, \code{intervention.parameter} and \code{intervention.value} must match the paired intervention, and \code{intervention.time} must be \code{0.0}.
+\end{itemize}
+
+Stage: Simulate reads top-level \code{kind} together with \code{recipe.intervention}.
+It must not read \code{recipe.intervention.mode}.
+
+\section*{\texorpdfstring{\titlecode{run_edges.jsonl}}{run\_edges.jsonl}}
+\phantomsection\label{sec:candidate-generation-run-edges}
+
+\code{run_edges.jsonl} is a JSON Lines file.
+Each line is one relationship between run nodes.
+Edges are used to recover the baseline/intervention/time-zero structure without nesting nodes.
+
+\subsection*{Edge Shape}
+
+\begin{DocCode}
+{
+  "edge_type": "baseline_to_intervention",
+  "family_id": "run_7fd9daa0055fb3f412ef5e0ab8d4c5ba",
+  "source_run_id": "run_baseline_...",
+  "target_run_id": "run_intervention_...",
+  "metadata": {
+    "parameter": "gravity",
+    "direction": "increase",
+    "intervention_time": 4.0
+  }
+}
+\end{DocCode}
+
+Allowed \code{edge_type} values are:
+
+\begin{itemize}
+\item \code{baseline_to_intervention}
+\item \code{intervention_to_time0_baseline}
+\end{itemize}
+
+Family membership is primarily represented by \code{family_id}.
+A separate family-membership edge is not required.
+
+\section*{\texorpdfstring{\titlecode{generation_report.json}}{generation\_report.json}}
+
+\code{generation_report.json} records what the candidate-generation stage attempted and produced.
+
+Recommended fields include:
+
+\begin{itemize}
+\item \code{timestamp}
+\item \code{model}: \termSimulator identifier
+\item \code{policy_id}
+\item \code{seed}
+\item \code{generator}
+\item \code{generator_version}
+\item requested family count
+\item generated family count
+\item baseline node count
+\item intervention node count
+\item time-zero/static-change node count
+\item skipped parameter-direction requests
+\item per-parameter and per-direction coverage summaries
+\item resolved intervention value-sampler configuration, including \code{distance_space}
+\item policy acceptance summary
+\end{itemize}
+
+
+\section*{Core Validation Rules}
+
+The following rules apply to every resolved run graph with reference to \code{  run_nodes.jsonl}, \code{  run_edges.jsonl} and \code{validation_report.json}
+
+\begin{itemize}
+\item Every baseline recipe must include all exposed parameters and initial-state variables.
+\item Every \code{kind = "baseline"} node must have \code{intervention.parameter}, \code{intervention.value}, and \code{intervention.time} set to \code{null}.
+\item Every \code{kind = "intervention"} node must change exactly one variable listed under \code{experiment_config.json::exposed_variables.parameters}.
+\item No intervention may change a variable listed only under \code{experiment_config.json::exposed_variables.initial_state}.
+\item Every intervention value must respect the changed parameter's \code{allowed_intervals}.
+\item Every edge must point to existing run IDs.
+\item Every \code{baseline_to_intervention} edge must connect a baseline node to an intervention node.
+\item Every \code{intervention_to_time0_baseline} edge must connect an intervention node to a time-zero/static-change node.
+\end{itemize}
+
+\section*{Additional Candidate Validation Rules}
+
+The following additional checks apply to candidate runs intended for benchmark selection:
+
+\begin{itemize}
+ \item Every intervention candidate should have both a matched no-intervention baseline run and a matched time-zero/static-change run.
+\end{itemize}
+
+
+\end{document}
